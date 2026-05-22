@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .env
+.venv/
+data/
+secure_db_service/__pycache__/

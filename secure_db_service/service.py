@@ -81,7 +81,7 @@ class SecureDbService:
                     conn.execute("PRAGMA journal_mode=WAL")
 
                 conn.execute("PRAGMA foreign_keys=ON")
-                conn.row_factory = sqlite3.Row
+                conn.row_factory = driver.Row
 
                 return conn
 

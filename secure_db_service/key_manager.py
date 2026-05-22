@@ -80,12 +80,8 @@ def resolve_key(
         if val:
             return val
 
-    try:
-        from .key_manager import get_key
-        val = get_key(service_name, key_name)
-        if val:
-            return val
-    except Exception:
-        pass
+    val = get_key(service_name, key_name)
+    if val:
+        return val
 
     return FALLBACK_KEY
