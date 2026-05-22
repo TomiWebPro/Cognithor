@@ -1,6 +1,6 @@
 # Cognithor
 
-This project is a **spiritual fork** of the original [Cognithor by Alex](https://github.com/Alex8791-cyber/cognithor) — meaning it was built from scratch, inspired by the same concept and goals, but without copying or cloning any code from the original. Every line is independently written to recreate and verify the functionality.
+This project is an independent attempt to deliver the exact functionality promised by the original [Cognithor project](https://github.com/Alex8791-cyber/cognithor), but built from a different architecture — without invoking any existing code.
 
 This project is in active beta — not ready for production. Check the [original project](https://github.com/Alex8791-cyber/cognithor) for a stable release.
 
