@@ -1,0 +1,5 @@
+# Log Service Dependencies
+# Install with: pip install -r logging_requirements.txt
+
+keyring>=24.0.0
+# pysqlcipher3  # Uncomment for encrypted database support (requires libsqlcipher)
