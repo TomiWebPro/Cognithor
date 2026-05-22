@@ -2,7 +2,7 @@
 
 This project is an attempt aimed to recreate and validate the exact functionality promised by the original [Cognithor project](https://github.com/Alex8791-cyber/cognithor), built from a different architecture. No code/implementations were cloned from the original project.
 
-This project is in active beta — not ready for production. Check the [original project](https://github.com/Alex8791-cyber/cognithor) for a stable release.
+This project is incomplete — not ready for production. Check the [original project](https://github.com/Alex8791-cyber/cognithor) for a stable release.
 
 ## License
 
