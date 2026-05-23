@@ -17,7 +17,7 @@ DEFAULT_CONFIG: dict[str, Optional[str]] = {
     "api_port": "4464",
     "secret_key": None,
     "algorithm": "HS256",
-    "access_token_expire_minutes": "60",
+    "access_token_expire_minutes": "10",
     "app_name": "Cognithor",
     "app_version": "0.1.0",
     "encryption_key": None,
@@ -71,6 +71,14 @@ class ApiConfigManager:
             );
         """)
 
+        try:
+            self._svc.execute(
+                "ALTER TABLE api_users ADD COLUMN token_version "
+                "INTEGER NOT NULL DEFAULT 1"
+            )
+        except Exception:
+            pass
+
     def _seed_defaults(self) -> None:
         for key, default_value in DEFAULT_CONFIG.items():
             existing = self._svc.query_one(
@@ -79,6 +87,8 @@ class ApiConfigManager:
             if existing is not None:
                 continue
             if default_value is None:
+                if key == "encryption_key":
+                    continue
                 value = secrets.token_hex(32)
             else:
                 value = default_value
@@ -104,6 +114,9 @@ class ApiConfigManager:
             "INSERT OR REPLACE INTO api_config (key, value) VALUES (?, ?)",
             (key, value),
         )
+
+    def toggle_encryption(self, enable: bool) -> bool:
+        return self._svc.toggle_encryption(enable)
 
     def get_all_config(self) -> dict[str, str]:
         rows = self._svc.query("SELECT key, value FROM api_config")
@@ -134,3 +147,22 @@ class ApiConfigManager:
             "SELECT id FROM api_users WHERE username = ?", (username,)
         )
         return row is not None
+
+    def get_token_version(self, username: str) -> int:
+        row = self._svc.query_one(
+            "SELECT token_version FROM api_users WHERE username = ?",
+            (username,),
+        )
+        return row["token_version"] if row else 0
+
+    def increment_token_version(self, username: str) -> int:
+        self._svc.execute(
+            "UPDATE api_users SET token_version = token_version + 1 "
+            "WHERE username = ?",
+            (username,),
+        )
+        row = self._svc.query_one(
+            "SELECT token_version FROM api_users WHERE username = ?",
+            (username,),
+        )
+        return row["token_version"] if row else 0

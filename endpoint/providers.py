@@ -81,9 +81,7 @@ class HttpProvider:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> tuple[str, UsageInfo]:
-        model = model or self.record.get_model("high")
-        if not model:
-            model = self.record.default_model or ""
+        model = model or ""
         if not max_tokens:
             max_tokens = 4096
 

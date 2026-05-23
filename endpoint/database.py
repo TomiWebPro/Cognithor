@@ -20,8 +20,7 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="openai",
         base_url="https://api.openai.com/v1",
         endpoint_path="/chat/completions",
-        default_model="gpt-4o",
-        models={"low": "gpt-4o-mini", "high": "gpt-4o", "image": "gpt-4o", "embedding": "text-embedding-3-small"},
+        models=["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"],
         headers_template={},
         auth_type="bearer",
         body_template='{"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}, "max_tokens": ${max_tokens}}',
@@ -34,8 +33,7 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         endpoint_path="/chat/completions",
-        default_model="anthropic/claude-3.5-sonnet",
-        models={"low": "openai/gpt-4o-mini", "high": "anthropic/claude-3.5-sonnet", "image": "openai/gpt-4o"},
+        models=["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "openai/gpt-4o"],
         headers_template={"HTTP-Referer": "https://github.com/tomi/cognithor"},
         auth_type="bearer",
         body_template='{"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}, "max_tokens": ${max_tokens}}',
@@ -47,8 +45,7 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="ollama",
         base_url="http://localhost:11434",
         endpoint_path="/api/chat",
-        default_model="llama3",
-        models={"low": "llama3", "high": "llama3", "image": "llava"},
+        models=["llama3", "llava"],
         headers_template={},
         auth_type="none",
         body_template='{"model": "${model}", "messages": ${messages_json}, "options": {"temperature": ${temperature}, "num_predict": ${max_tokens}}}',
@@ -61,8 +58,7 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="anthropic",
         base_url="https://api.anthropic.com/v1",
         endpoint_path="/messages",
-        default_model="claude-sonnet-4-20250514",
-        models={"low": "claude-haiku-3-5-20241022", "high": "claude-sonnet-4-20250514", "image": "claude-sonnet-4-20250514"},
+        models=["claude-haiku-3-5-20241022", "claude-sonnet-4-20250514"],
         headers_template={"anthropic-version": "2023-06-01"},
         auth_type="header",
         auth_header_name="x-api-key",
@@ -78,15 +74,16 @@ class Tracker:
     def __init__(
         self,
         db_path: Optional[Path] = None,
-        use_encryption: bool = False,
+        use_encryption: bool = True,
         service_name: str = "Cognithor",
         key_name: str = "db_key",
         key_env_var: Optional[str] = None,
         log_service: Optional[LogService] = None,
+        svc: Optional[SecureDbService] = None,
     ):
         self.log = log_service or LogService()
         self.db_path = db_path or DB_PATH
-        self._svc = SecureDbService(
+        self._svc = svc or SecureDbService(
             db_path=self.db_path,
             use_encryption=use_encryption,
             wal_mode=True,
@@ -106,7 +103,6 @@ class Tracker:
                 api_key                 TEXT,
                 base_url                TEXT NOT NULL,
                 endpoint_path           TEXT DEFAULT '/chat/completions',
-                default_model           TEXT,
                 models                  TEXT,
                 headers_template        TEXT DEFAULT '{}',
                 auth_type               TEXT DEFAULT 'bearer',
@@ -164,15 +160,15 @@ class Tracker:
     def _insert_provider(self, rec: ProviderRecord) -> None:
         self._svc.execute(
             """INSERT INTO providers
-                (name, api_key, base_url, endpoint_path, default_model, models,
+                (name, api_key, base_url, endpoint_path, models,
                  headers_template, auth_type, auth_header_name, body_template,
                  response_content_path, response_usage_input_path,
                  response_usage_output_path, response_usage_cost_path,
                  is_streaming, is_active, max_retries, timeout_seconds, max_concurrent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 rec.name, rec.api_key, rec.base_url, rec.endpoint_path,
-                rec.default_model, json.dumps(rec.models),
+                json.dumps(rec.models),
                 json.dumps(rec.headers_template), rec.auth_type,
                 rec.auth_header_name, rec.body_template,
                 rec.response_content_path, rec.response_usage_input_path,
@@ -214,7 +210,6 @@ class Tracker:
                     api_key = COALESCE(?, api_key),
                     base_url = COALESCE(?, base_url),
                     endpoint_path = COALESCE(?, endpoint_path),
-                    default_model = COALESCE(?, default_model),
                     models = COALESCE(?, models),
                     headers_template = COALESCE(?, headers_template),
                     auth_type = COALESCE(?, auth_type),
@@ -233,7 +228,7 @@ class Tracker:
                 WHERE name = ?""",
                 (
                     rec.api_key, rec.base_url, rec.endpoint_path,
-                    rec.default_model, json.dumps(rec.models),
+                    json.dumps(rec.models),
                     json.dumps(rec.headers_template), rec.auth_type,
                     rec.auth_header_name, rec.body_template,
                     rec.response_content_path, rec.response_usage_input_path,
@@ -264,14 +259,22 @@ class Tracker:
             if val is None:
                 return {}
             return json.loads(val) if isinstance(val, str) and val.strip() else {}
+        def _jl(val):
+            if val is None:
+                return []
+            if isinstance(val, str) and val.strip():
+                parsed = json.loads(val)
+                if isinstance(parsed, dict):
+                    return list(parsed.values())
+                return parsed
+            return []
         return ProviderRecord(
             id=row["id"],
             name=row["name"],
             api_key=row["api_key"],
             base_url=row["base_url"],
             endpoint_path=row["endpoint_path"],
-            default_model=row["default_model"],
-            models=_j(row["models"]),
+            models=_jl(row["models"]),
             headers_template=_j(row["headers_template"]),
             auth_type=row["auth_type"],
             auth_header_name=row["auth_header_name"],
@@ -355,6 +358,9 @@ class Tracker:
         return self._svc.query(
             "SELECT * FROM health_checks ORDER BY id DESC LIMIT ?", (limit,)
         )
+
+    def toggle_encryption(self, enable: bool) -> bool:
+        return self._svc.toggle_encryption(enable)
 
     def backup(self, target_path: str | Path) -> None:
         self._svc.backup(target_path)

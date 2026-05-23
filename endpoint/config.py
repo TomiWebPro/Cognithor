@@ -30,7 +30,6 @@ class EndpointSettings:
         known_fields = {
             "_api_key": "api_key",
             "_base_url": "base_url",
-            "_default_model": "default_model",
         }
         for key, val in os.environ.items():
             if not key.startswith(ENDPOINT_VAR_PREFIX):
@@ -58,8 +57,6 @@ class EndpointSettings:
                 rec.api_key = val
             elif field == "base_url":
                 rec.base_url = val
-            elif field == "default_model":
-                rec.default_model = val
 
             self.tracker.save_provider(rec)
 
@@ -92,8 +89,6 @@ class EndpointSettings:
                 rec.api_key = opts["api_key"]
             if opts.get("base_url"):
                 rec.base_url = opts["base_url"]
-            if opts.get("default_model"):
-                rec.default_model = opts["default_model"]
             if opts.get("models"):
                 rec.models = opts["models"]
             if opts.get("headers_template"):

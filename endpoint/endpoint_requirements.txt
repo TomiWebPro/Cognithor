@@ -1,6 +1,0 @@
-# Endpoint Module Dependencies
-# Install with: pip install -r endpoint_requirements.txt
-
-httpx>=0.27.0
-keyring>=24.0.0
-# pysqlcipher3  # Uncomment for encrypted database support (requires libsqlcipher)

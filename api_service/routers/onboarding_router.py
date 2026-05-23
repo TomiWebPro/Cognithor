@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import secrets
 
 import qrcode
 from fastapi import APIRouter, Depends
@@ -19,18 +18,14 @@ def _get_passkey_data(config_mgr: ApiConfigManager) -> dict:
     config = config_mgr.get_all_config()
     host = config.get("api_host", "0.0.0.0")
     port = config.get("api_port", "8000")
-
-    encryption_key = config_mgr.get_config("encryption_key")
-    if not encryption_key:
-        encryption_key = secrets.token_hex(32)
-        config_mgr.set_config("encryption_key", encryption_key)
+    encryption_available = True
 
     return {
         "host": host,
         "port": int(port),
         "username": "admin",
         "password": "admin",
-        "encryption_key": encryption_key,
+        "encryption_available": encryption_available,
     }
 
 

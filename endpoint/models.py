@@ -3,13 +3,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-class ModelLevel(str):
-    LOW = "low"
-    HIGH = "high"
-    IMAGE = "image"
-    EMBEDDING = "embedding"
-
-
 @dataclass
 class Message:
     role: str
@@ -23,8 +16,7 @@ class ProviderRecord:
     api_key: Optional[str] = None
     base_url: str = ""
     endpoint_path: str = "/chat/completions"
-    default_model: Optional[str] = None
-    models: dict[str, str] = field(default_factory=dict)
+    models: list[str] = field(default_factory=list)
     headers_template: dict[str, str] = field(default_factory=dict)
     auth_type: str = "bearer"
     auth_header_name: Optional[str] = None
@@ -38,9 +30,6 @@ class ProviderRecord:
     max_retries: int = 3
     timeout_seconds: int = 60
     max_concurrent: int = 5
-
-    def get_model(self, level: str = "high") -> str:
-        return self.models.get(level, self.default_model or "")
 
 
 @dataclass

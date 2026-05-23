@@ -10,8 +10,6 @@ Defines the data structures used throughout the module.
 
 **`Message`**: A single chat message with a `role` (e.g. "user", "assistant", "system") and `content` string. This is the input unit for all chat calls.
 
-**`ModelLevel`**: A simple string class with constants (`LOW`, `HIGH`, `IMAGE`, `EMBEDDING`) used to select appropriate models per task type.
-
 **`ProviderRecord`**: The central configuration object. It mirrors the `providers` database table and holds everything needed to talk to an LLM API:
 - `name`: Provider identifier like "openai", "ollama"
 - `base_url`, `endpoint_path`: Where to send HTTP requests
@@ -19,7 +17,7 @@ Defines the data structures used throughout the module.
 - `auth_type`: "bearer", "header", or "none"
 - `body_template`: A JSON template with `${model}`, `${messages_json}`, `${temperature}`, `${max_tokens}`, `${system_prompt}` placeholders. This is what makes the system data-driven — each provider has a different template stored in the DB row.
 - `response_content_path`, `response_usage_input_path`, `response_usage_output_path`: Dot-notation paths to extract the response text and token counts from the API's JSON response.
-- `models`: A dict mapping model levels to actual model names.
+- `models`: A list of model names available for this provider.
 - `is_streaming`: Whether the API returns newline-delimited JSON (Ollama).
 - `max_retries`, `timeout_seconds`, `max_concurrent`: Connection settings.
 
@@ -61,8 +59,7 @@ Provides `EndpointSettings`, which bootstraps provider configurations from envir
         "openai": {
             "api_key": "sk-...",
             "base_url": "https://api.openai.com/v1",
-            "default_model": "gpt-4o",
-            "models": {"high": "gpt-4o", "low": "gpt-4o-mini"},
+            "models": ["gpt-4o", "gpt-4o-mini"],
             "body_template": "{\"model\": \"${model}\", \"messages\": ${messages_json}}"
         }
     }
@@ -151,8 +148,7 @@ tracker.save_provider(ProviderRecord(
     name="groq",
     base_url="https://api.groq.com/openai/v1",
     endpoint_path="/chat/completions",
-    default_model="llama3-70b-8192",
-    models={"high": "llama3-70b-8192", "low": "llama3-8b-8192"},
+    models=["llama3-70b-8192", "llama3-8b-8192"],
     auth_type="bearer",
     body_template='{"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}}',
     response_content_path="choices.0.message.content",
@@ -170,7 +166,6 @@ After saving, the provider is immediately available via `EndpointManager` for ch
 |----------|--------|
 | `COGNITHOR_OPENAI_API_KEY` | Sets API key for the "openai" provider |
 | `COGNITHOR_OPENAI_BASE_URL` | Overrides base URL for OpenAI |
-| `COGNITHOR_OPENAI_DEFAULT_MODEL` | Sets default model for OpenAI |
 | `COGNITHOR_OPENROUTER_API_KEY` | Sets API key for OpenRouter |
 | `COGNITHOR_OLLAMA_BASE_URL` | Overrides Ollama base URL |
 | `COGNITHOR_ANTHROPIC_API_KEY` | Sets API key for Anthropic |

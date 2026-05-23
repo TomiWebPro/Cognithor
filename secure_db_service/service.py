@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .key_manager import resolve_key
+from .key_manager import get_or_create_key, resolve_key
 
 
 logger = logging.getLogger(__name__)
@@ -171,6 +171,48 @@ class SecureDbService:
             (table_name,),
         )
         return row is not None
+
+    def toggle_encryption(self, enable: bool) -> bool:
+        if enable == self.use_encryption:
+            return False
+
+        if enable:
+            get_or_create_key(service_name=self.service_name, key_name=self.key_name)
+
+        src_conn = self.connect()
+
+        try:
+            self.use_encryption = enable
+            self._cipher_module = None
+
+            import time as _time
+            temp_path = self.db_path.with_suffix(f".{int(_time.time())}.tmp")
+
+            dst_driver = self._get_driver()
+            dst_conn = dst_driver.connect(str(temp_path))
+            try:
+                key = self._get_encryption_key()
+                if key:
+                    dst_conn.execute(f"PRAGMA key = '{key}'")
+                dst_conn.execute("PRAGMA journal_mode=WAL")
+                dst_conn.execute("PRAGMA foreign_keys=ON")
+
+                script = "".join(src_conn.iterdump())
+                dst_conn.executescript(script)
+                dst_conn.commit()
+            finally:
+                dst_conn.close()
+        finally:
+            src_conn.close()
+
+        backup_path = self.db_path.with_suffix(".bak")
+        if backup_path.exists():
+            backup_path.unlink()
+        self.db_path.rename(backup_path)
+        temp_path.rename(self.db_path)
+        backup_path.unlink()
+
+        return True
 
     def vacuum(self) -> None:
         self.execute("VACUUM")

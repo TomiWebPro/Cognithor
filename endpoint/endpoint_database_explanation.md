@@ -15,8 +15,7 @@ Columns include:
 - **api_key**: API key for authentication (text, nullable). Stored here so it can be set via environment variables or config file, rather than hardcoded.
 - **base_url**: Base URL for the provider's API, e.g. "https://api.openai.com/v1" (text, not null). Swappable without modifying code.
 - **endpoint_path**: The path appended to base_url for chat completions, e.g. "/chat/completions", "/api/chat", "/messages" (text, default "/chat/completions").
-- **default_model**: The default model identifier to use when no model level matches, e.g. "gpt-4o" (text, nullable).
-- **models**: JSON string mapping model levels to specific model names, e.g. `{"low": "gpt-4o-mini", "high": "gpt-4o", "image": "gpt-4o", "embedding": "text-embedding-3-small"}` (text, nullable).
+- **models**: JSON array of model names available for this provider, e.g. `["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"]` (text, nullable).
 - **headers_template**: JSON string of extra HTTP headers to send with every request, e.g. `{"HTTP-Referer": "https://github.com/tomi/cognithor"}` (text, default "{}").
 - **auth_type**: Authentication method. One of "bearer" (sends `Authorization: Bearer <api_key>`), "header" (sends `<auth_header_name>: <api_key>`), or "none" (no auth) (text, default "bearer").
 - **auth_header_name**: Header name used when `auth_type` is "header", e.g. "x-api-key" for Anthropic (text, nullable).
@@ -42,12 +41,12 @@ Columns include:
 
 On first database creation, four providers are automatically seeded:
 
-| name | base_url | auth_type | endpoint_path | default_model |
-|------|----------|-----------|---------------|---------------|
-| openai | https://api.openai.com/v1 | bearer | /chat/completions | gpt-4o |
-| openrouter | https://openrouter.ai/api/v1 | bearer | /chat/completions | anthropic/claude-3.5-sonnet |
-| ollama | http://localhost:11434 | none | /api/chat | llama3 |
-| anthropic | https://api.anthropic.com/v1 | header | /messages | claude-sonnet-4-20250514 |
+| name | base_url | auth_type | endpoint_path | models |
+|------|----------|-----------|---------------|--------|
+| openai | https://api.openai.com/v1 | bearer | /chat/completions | gpt-4o, gpt-4o-mini, text-embedding-3-small |
+| openrouter | https://openrouter.ai/api/v1 | bearer | /chat/completions | openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, openai/gpt-4o |
+| ollama | http://localhost:11434 | none | /api/chat | llama3, llava |
+| anthropic | https://api.anthropic.com/v1 | header | /messages | claude-haiku-3-5-20241022, claude-sonnet-4-20250514 |
 
 These defaults are only inserted if no provider with that name already exists, so they do not overwrite existing configurations.
 
@@ -198,8 +197,7 @@ tracker.save_provider(ProviderRecord(
     name="gemini",
     base_url="https://generativelanguage.googleapis.com/v1beta",
     endpoint_path="/models/gemini-pro:generateContent",
-    default_model="gemini-pro",
-    models={"high": "gemini-pro", "low": "gemini-pro"},
+    models=["gemini-pro"],
     auth_type="header",
     auth_header_name="x-goog-api-key",
     body_template='{"contents": ${messages_json}, "generationConfig": {"temperature": ${temperature}, "maxOutputTokens": ${max_tokens}}}',

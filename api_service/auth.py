@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -24,18 +23,19 @@ def get_algorithm(config_mgr: ApiConfigManager) -> str:
     return alg or "HS256"
 
 
-def get_expire_minutes(config_mgr: ApiConfigManager) -> int:
+def get_expire_minutes(config_mgr: ApiConfigManager) -> float:
     val = config_mgr.get_config("access_token_expire_minutes")
     try:
-        return int(val) if val else 60
+        return float(val) if val else 10.0
     except (ValueError, TypeError):
-        return 60
+        return 10.0
 
 
 def create_access_token(
     data: dict,
     config_mgr: ApiConfigManager,
-    expires_delta: Optional[timedelta] = None,
+    expires_delta: timedelta | None = None,
+    token_version: int | None = None,
 ) -> str:
     to_encode = data.copy()
     if expires_delta:
@@ -45,6 +45,8 @@ def create_access_token(
             minutes=get_expire_minutes(config_mgr)
         )
     to_encode.update({"exp": expire})
+    if token_version is not None:
+        to_encode["ver"] = token_version
     secret = get_secret_key(config_mgr)
     algorithm = get_algorithm(config_mgr)
     return jwt.encode(to_encode, secret, algorithm=algorithm)
@@ -72,6 +74,11 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    superseded_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Token superseded by another login",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
     auth_token = getattr(request.state, "auth_token", None)
     if auth_token:
@@ -81,7 +88,7 @@ async def get_current_user(
         secret = get_secret_key(config_mgr)
         algorithm = get_algorithm(config_mgr)
         payload = jwt.decode(token, secret, algorithms=[algorithm])
-        username: Optional[str] = payload.get("sub")
+        username = payload.get("sub")
         if username is None:
             raise credentials_exception
     except JWTError:
@@ -89,5 +96,11 @@ async def get_current_user(
 
     if not config_mgr.user_exists(username):
         raise credentials_exception
+
+    token_ver = payload.get("ver")
+    if token_ver is not None:
+        current_ver = config_mgr.get_token_version(username)
+        if token_ver != current_ver:
+            raise superseded_exception
 
     return username

@@ -25,9 +25,11 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    version = config_mgr.increment_token_version(username)
     access_token = create_access_token(
         data={"sub": username},
         config_mgr=config_mgr,
+        token_version=version,
     )
     return {"access_token": access_token, "token_type": "bearer"}
 

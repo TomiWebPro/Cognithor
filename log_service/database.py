@@ -17,7 +17,7 @@ class LogDatabase:
     def __init__(
         self,
         db_path: Optional[Path] = None,
-        use_encryption: bool = False,
+        use_encryption: bool = True,
         service_name: str = "Cognithor",
         key_name: str = "log_db_key",
         key_env_var: Optional[str] = None,
@@ -123,6 +123,9 @@ class LogDatabase:
             (f"-{days} days",),
         )
         return cur.rowcount
+
+    def toggle_encryption(self, enable: bool) -> bool:
+        return self._svc.toggle_encryption(enable)
 
     def vacuum(self) -> None:
         self._svc.vacuum()

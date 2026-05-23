@@ -6,6 +6,8 @@ from typing import Optional
 
 from log_service import LogService
 
+from secure_db_service import SecureDbService
+
 from .config import EndpointSettings
 from .database import Tracker
 from .models import EndpointStatus, Message, ProviderRecord
@@ -18,8 +20,9 @@ class EndpointManager:
         tracker: Optional[Tracker] = None,
         settings: Optional[EndpointSettings] = None,
         log_service: Optional[LogService] = None,
+        svc: Optional[SecureDbService] = None,
     ):
-        self.tracker = tracker or Tracker()
+        self.tracker = tracker or Tracker(svc=svc)
         self.settings = settings or EndpointSettings(tracker=self.tracker)
         self.log = log_service or LogService()
         self._instances: dict[str, HttpProvider] = {}

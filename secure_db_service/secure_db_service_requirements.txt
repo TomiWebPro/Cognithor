@@ -1,5 +1,0 @@
-# SecureDbService Dependencies
-# Install with: pip install -r secure_db_service_requirements.txt
-
-keyring>=24.0.0
-# pysqlcipher3  # Uncomment for encrypted database support (requires libsqlcipher)

@@ -159,7 +159,7 @@ def cmd_status() -> None:
             n, providers = _check_endpoint_db(try_enc)
             print(f"  providers table: {n} row(s)")
             for p in providers:
-                print(f"    · {p.name}  (active={p.is_active}, model={p.default_model})")
+                print(f"    · {p.name}  (active={p.is_active}, models={p.models})")
             break
         except Exception as exc:
             if try_enc:
