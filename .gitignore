@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 data/
 secure_db_service/__pycache__/
+.vscode/
