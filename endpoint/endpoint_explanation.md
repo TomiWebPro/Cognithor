@@ -15,10 +15,13 @@ Defines the data structures used throughout the module.
 - `base_url`, `endpoint_path`: Where to send HTTP requests
 - `api_key`: Authentication credential (stored in DB, not code)
 - `auth_type`: "bearer", "header", or "none"
+- `auth_header_name`: Custom header name when `auth_type` is "header" (e.g. "x-api-key" for Anthropic)
 - `body_template`: A JSON template with `${model}`, `${messages_json}`, `${temperature}`, `${max_tokens}`, `${system_prompt}` placeholders. This is what makes the system data-driven — each provider has a different template stored in the DB row.
-- `response_content_path`, `response_usage_input_path`, `response_usage_output_path`: Dot-notation paths to extract the response text and token counts from the API's JSON response.
-- `models`: A list of model names available for this provider.
+- `response_content_path`, `response_usage_input_path`, `response_usage_output_path`, `response_usage_cost_path`: Dot-notation paths to extract the response text and token counts from the API's JSON response.
+- `models`: A dict mapping model names to model IDs (e.g. `{"gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini"}`). This is `dict[str, str]`, not a plain list.
+- `active_models`: A dict tracking which models have been tested and are reachable (e.g. `{"gpt-4o": true, "gpt-4o-mini": false}`).
 - `is_streaming`: Whether the API returns newline-delimited JSON (Ollama).
+- `headers_template`: Extra HTTP headers to include in every request (e.g. `{"anthropic-version": "2023-06-01"}`).
 - `max_retries`, `timeout_seconds`, `max_concurrent`: Connection settings.
 
 **`EndpointStatus`**: Holds the result of a health check — whether a provider is reachable, its latency, and any error message.
@@ -29,10 +32,11 @@ Defines the data structures used throughout the module.
 
 Provides the `Tracker` class, which handles all database operations. It delegates low-level database access to `SecureDbService` (from the `secure_db_service` package), which provides deterministic non-blocking access with WAL mode, retry logic for locked databases, and optional keyring-backed encryption.
 
-`Tracker` manages three tables:
+`Tracker` manages four tables:
 - **`providers`**: Stores all provider configurations (rows are self-contained — no code changes needed to add a new provider).
-- **`usage_log`**: Records every API call with token counts, cost, duration, status, and context.
+- **`usage_log`**: Records every API call with token counts, cost, duration, status, context, and optional metadata JSON.
 - **`health_checks`**: Stores results of periodic provider availability checks.
+- **`schema_version`**: Tracks database schema version for migrations (e.g. list-to-dict models migration).
 
 Key methods:
 - `get_provider(name)`, `get_active_provider()`, `list_providers()`, `save_provider(rec)`, `set_active(name)` — CRUD for providers.
@@ -74,21 +78,21 @@ Contains the HTTP client layer for talking to LLM APIs. Unlike traditional desig
 
 **`UsageInfo`**: A simple data class that holds the result of a chat call — input/output token counts, cost, duration, and model name.
 
-**`_navigate(obj, path)`**: A utility that extracts values from nested JSON using dot-notation paths. For example, `_navigate(data, "choices.0.message.content")` resolves to `data["choices"][0]["message"]["content"]`. This is how the same provider code works with OpenAI's response format (`choices.0.message.content`), Anthropic's (`content.0.text`), and Ollama's (`message.content`).
+**`_navigate(obj, path)`**: A utility that extracts values from nested JSON using dot-notation paths. For example, `_navigate(data, "choices.0.message.content")` resolves to `data["choices"][0]["message"]["content"]`. This is how the same provider code works with OpenAI's response format (`choices.0.message.content`), Anthropic's (`content.0.text`), and Ollama's (`message.content`). Array indices are specified as integers in the path string.
 
-**`_prepare_messages(messages, body_template)`**: Pre-processes the message list before template substitution. If the body template contains `${system_prompt}`, the first system-role message is extracted and set aside (for Anthropic's API which puts system at the top level). Otherwise all messages are rendered as-is into `messages_json`.
+**`_prepare_messages(messages, body_template)`**: Pre-processes the message list before template substitution. If the body template contains `${system_prompt}`, the first system-role message is extracted and set aside (for Anthropic's API which puts `system` at the top level). That message is excluded from the rendered `messages_json`. Otherwise all messages are rendered as-is.
 
 **`HttpProvider`**: The single generic provider class.
-- `__init__(record)`: Takes a `ProviderRecord` that defines all behavior.
+- `__init__(record, log_service)`: Takes a `ProviderRecord` that defines all behavior, plus an optional `LogService`.
 - `chat(messages, model, temperature, max_tokens)`: The core method.
-  1. Resolves the model name from the record or argument.
+  1. Resolves the model name from the argument.
   2. Calls `_prepare_messages` to handle system prompt extraction.
   3. Substitutes placeholders into the `body_template` using Python's `string.Template`.
-  4. Builds HTTP headers based on `auth_type` ("bearer" sends `Authorization: Bearer <key>`, "header" sends a custom header like `x-api-key`, "none" sends no auth).
-  5. Sends the POST request via `httpx` and measures duration.
+  4. Builds HTTP headers: starts with `headers_template` from the record, adds `Content-Type: application/json`, and auth based on `auth_type` ("bearer" → `Authorization: Bearer <key>`, "header" → `<auth_header_name>: <key>`, "none" → no auth).
+  5. Sends the POST request via `httpx.Client` with the record's timeout and measures duration.
   6. If `is_streaming` is True, parses newline-delimited JSON (Ollama's format) and concatenates content across lines.
   7. If not streaming, parses the JSON response using `_navigate` to extract the response text.
-  8. Extracts token counts using the configured `response_usage_input_path` and `response_usage_output_path`.
+  8. Extracts token counts and cost using the configured `response_usage_input_path`, `response_usage_output_path`, and `response_usage_cost_path` paths.
   9. Returns the response text and a `UsageInfo` object.
 
 Because all variability is in the `ProviderRecord` (stored in the database), this single class handles OpenAI, OpenRouter, Ollama, Anthropic, and any future OpenAI-compatible API without code changes.
@@ -97,11 +101,12 @@ Because all variability is in the `ProviderRecord` (stored in the database), thi
 
 Provides `EndpointManager`, the high-level interface that most application code interacts with. It ties together the database (`Tracker`), configuration (`EndpointSettings`), and HTTP clients (`HttpProvider`).
 
-**EndpointManager**:
-- `chat(messages, provider, model, temperature, max_tokens, context)`: Sends a chat request to the specified provider (or the active provider if none specified). Automatically records usage to `usage_log` after each call.
-- `chat_with_fallback(messages, preferred, ...)`: Tries providers in order. If the preferred provider fails, it falls through to the next available provider. Raises an error if all fail.
+**`EndpointManager`**:
+- `chat(messages, provider, model, temperature, max_tokens, context)`: Sends a chat request to the specified provider (or the active provider if none specified). Automatically records usage to `usage_log` after each call. Logs errors via `LogService.log_exception()`.
+- `chat_with_fallback(messages, preferred, ...)`: Tries providers in order. If the preferred provider fails, it falls through to the next available provider. Raises `RuntimeError` if all fail.
 - `chat_with_round_robin(messages, ...)`: Randomly selects a provider from all configured ones. Useful for load distribution.
-- `check_status(name)`: Sends a minimal "ok" prompt to a provider and measures latency. Returns an `EndpointStatus` with availability, latency, and error info. Exceptions are caught gracefully.
+- `check_status(name)`: Sends a "hello" message to a provider with `max_tokens=1` and checks that exactly 1 token is returned. Returns an `EndpointStatus` with availability, latency, and error info.
+- `test_model(name, model_name)`: Tests a specific model by sending "hello" with `max_tokens=1`. Updates the record's `active_models` dict with the result (True/False). If any model is active, sets `is_active=True` on the provider.
 - `check_all()`: Checks all configured providers in sequence.
 - `register_provider(record)`: Saves a new provider record to the database and clears the cached HTTP client so it gets recreated on next use.
 
@@ -148,7 +153,7 @@ tracker.save_provider(ProviderRecord(
     name="groq",
     base_url="https://api.groq.com/openai/v1",
     endpoint_path="/chat/completions",
-    models=["llama3-70b-8192", "llama3-8b-8192"],
+    models={"llama3-70b-8192": "llama3-70b-8192", "llama3-8b-8192": "llama3-8b-8192"},
     auth_type="bearer",
     body_template='{"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}}',
     response_content_path="choices.0.message.content",

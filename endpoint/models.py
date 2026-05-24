@@ -16,7 +16,8 @@ class ProviderRecord:
     api_key: Optional[str] = None
     base_url: str = ""
     endpoint_path: str = "/chat/completions"
-    models: list[str] = field(default_factory=list)
+    models: dict[str, str] = field(default_factory=dict)
+    active_models: dict[str, bool] = field(default_factory=dict)
     headers_template: dict[str, str] = field(default_factory=dict)
     auth_type: str = "bearer"
     auth_header_name: Optional[str] = None

@@ -11,14 +11,15 @@ REST API for the Cognithor autonomous agent system. Built with FastAPI.
    GET  /                        → server info
    GET  /health                  → health check
    GET  /onboarding/passkey      → onboarding passkey
+   GET  /onboarding/passkey.qr   → onboarding QR image
 
  Tier 2 — Login (plain HTTP, credentials in body)
    POST /token                   → username + password → JWT
 
  Tier 3 — Encrypted (AES-256-GCM, key derived from JWT)
    All other endpoints           → request/response payloads encrypted
-                                   key = SHA-256(JWT)
-                                   JWT in Authorization: Bearer header
+                                    key = SHA-256(JWT)
+                                    JWT in Authorization: Bearer header
 ```
 
 ## Encryption Detail
@@ -47,31 +48,25 @@ Once a JWT is obtained, all authenticated API communication uses payload-level e
 }
 ```
 
-The plaintext inside the envelope is JSON. For requests, the inner structure is:
-```json
-{
-  "_token": "optional JWT for redundancy",
-  "_body": { ... original request body ... }
-}
-```
-
-The middleware (`api_service/middleware.py`) transparently encrypts/decrypts — route handlers never see encrypted data.
+The plaintext inside the envelope is the original JSON body. The middleware (`api_service/middleware.py`) transparently encrypts/decrypts — route handlers never see encrypted data. The JWT is read from the `Authorization: Bearer` header (not from inside the encrypted payload).
 
 ## Excluded Routes (No Encryption)
 
-| Route | Reason |
+All routes under these prefixes bypass encryption:
+
+| Prefix | Reason |
 |---|---|
-| `GET /` | Public server info |
-| `GET /health` | Public health check |
-| `POST /token` | Login — credentials sent in plaintext, JWT returned |
-| `GET /onboarding/passkey` | Onboarding passkey (public) |
-| `GET /onboarding/passkey.qr` | Onboarding QR image (public) |
-| `/docs`, `/redoc` | OpenAPI documentation |
+| `/` | Public server info |
+| `/health` | Public health check |
+| `/token` | Login — credentials sent in plaintext, JWT returned |
+| `/onboarding` | Onboarding passkey + QR (public) |
+| `/docs` | OpenAPI documentation |
+| `/redoc` | OpenAPI documentation |
 | `/openapi.json` | OpenAPI schema |
 
 ## Base URL
 
-Defaults to `http://localhost:8000`. Configurable via `api_host` and `api_port` in the `api_config` database table.
+Defaults to `http://0.0.0.0:4464`. Configurable via `api_host` and `api_port` in the `api_config` database table.
 
 ## Authentication
 
@@ -207,8 +202,8 @@ All provider endpoints require authentication and use encrypted payloads.
 | `POST` | `/providers` | Create provider |
 | `PUT` | `/providers/{name}` | Update provider |
 | `DELETE` | `/providers/{name}` | Delete provider |
-| `POST` | `/providers/{name}/activate` | Set provider as active |
-| `POST` | `/providers/{name}/test` | Test provider connectivity |
+| `POST` | `/providers/{name}/test` | Test provider connectivity (or specific model if `model` in body) |
+| `POST` | `/providers/{name}/test-model/{model}` | Test a specific model by name |
 
 ### Settings
 
@@ -226,9 +221,21 @@ All settings endpoints require authentication and use encrypted payloads.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/settings/security` | Get security config |
-| `PUT` | `/settings/security` | Update security config |
-| `POST` | `/settings/token/refresh` | Refresh JWT token |
+| `GET` | `/settings/security` | Get security config (TTL, DB encryption status, keyring status) |
+| `PUT` | `/settings/security` | Update security config — TTL (0.5–10 min) or toggle DB encryption |
+| `POST` | `/settings/token/refresh` | Refresh JWT token (same session, version preserved) |
+
+When toggling database encryption, all three databases (`cognithor.db`, `cognithor_logs.db`) are converted via SQLite `iterdump` + recreate. The operation sets `encryption_in_progress` to prevent concurrent toggles (409 if attempted).
+
+### Settings (General)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/settings` | Get all config key-values |
+| `PUT` | `/settings` | Update config key-value pairs |
+| `GET` | `/settings/users` | List users and creation dates |
+| `POST` | `/settings/users` | Create new user |
+| `PUT` | `/settings/users/me/password` | Change own password (requires `old_password` + `new_password`) |
 
 ## Key Implementation Files
 
@@ -236,21 +243,29 @@ All settings endpoints require authentication and use encrypted payloads.
 |---|---|
 | `api_service/encryption.py` | `derive_key()`, `encrypt_payload()`, `decrypt_payload()` |
 | `api_service/middleware.py` | `EncryptionMiddleware` — transparent encryption/decryption |
-| `api_service/auth.py` | JWT creation, validation, TTL (float, supports sub-minute) |
-| `api_service/database.py` | DB schema, user management, config storage |
-| `api_service/routers/security_router.py` | TTL validation (0.5–10 min range) |
+| `api_service/auth.py` | JWT creation, validation, TTL (float, supports sub-minute), token version enforcement |
+| `api_service/database.py` | `ApiConfigManager` — DB schema, user management, config storage, password hashing |
+| `api_service/main.py` | FastAPI app entry point, CLI (`-i` for interactive menu, `--encrypt`/`--no-encrypt`), DB encryption auto-detect |
+| `api_service/cli_launcher.py` | Interactive CLI menu — status, provider CRUD, model management, connection info + passkey generation |
+| `api_service/routers/base.py` | Root (`GET /`) and health (`GET /health`) endpoints |
+| `api_service/routers/auth_router.py` | Login (`POST /token`) and current user (`GET /users/me`) |
+| `api_service/routers/providers_router.py` | Full provider CRUD + test endpoints |
+| `api_service/routers/security_router.py` | TTL validation (0.5–10 min range), DB encryption toggle, token refresh |
+| `api_service/routers/settings_router.py` | General settings CRUD, user management |
+| `api_service/routers/onboarding_router.py` | Passkey + QR code generation for frontend onboarding |
 
 ## Error Codes
 
 | Code | Meaning |
 |---|---|
 | 200 | Success |
-| 400 | Bad request (invalid TTL, malformed encrypted payload) |
+| 400 | Bad request (invalid TTL range, malformed encrypted payload, missing fields) |
 | 401 | Unauthorized — `"Could not validate credentials"` (missing/invalid/expired JWT) |
 | 401 | Unauthorized — `"Token superseded by another login"` (version mismatch) |
+| 403 | Forbidden — wrong current password on password change |
 | 404 | Resource not found |
-| 409 | Conflict (duplicate, encryption in progress) |
-| 422 | Invalid input |
+| 409 | Conflict (duplicate provider, duplicate user, encryption toggle already in progress) |
+| 422 | Invalid input (missing required fields) |
 | 500 | Server error |
 
 ## Quickstart
@@ -258,13 +273,15 @@ All settings endpoints require authentication and use encrypted payloads.
 ```bash
 cd cognithor/
 python onboarding/setup.py init --no-encrypt
-python -m api_service.main
+python -m api_service.main              # starts uvicorn server
+# or
+python -m api_service.main -i           # interactive CLI menu (no server)
 
 # Health check (public)
-curl http://localhost:8000/health
+curl http://localhost:4464/health
 
 # Login (plain)
-curl -X POST http://localhost:8000/token \
+curl -X POST http://localhost:4464/token \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "admin"}'
 
@@ -280,8 +297,11 @@ curl -X POST http://localhost:8000/token \
 | Login | Plain HTTP, credentials in body |
 | Authenticated payloads | AES-256-GCM encrypted, key = SHA-256(JWT) |
 | Key derivation | SHA-256 of the JWT (stateless, no storage) |
-| Token TTL | 30s–10min, configurable in DB |
+| Token TTL | 30s–10min (0.5–10), configurable in DB via `access_token_expire_minutes` |
 | Token refresh | Available, keeps same token version |
 | Single-session | Enforced via `ver` claim in JWT, incremented on each login |
 | Onboarding passkey | Base64-encoded, carries host+credentials |
-| DB encryption | Optional SQLCipher (separate from API encryption) |
+| DB encryption | Optional SQLCipher via `pysqlcipher3`/`sqlcipher3`, key from env var → keyring → fallback |
+| Keyring | OS keyring (via `keyring` lib) stores DB encryption key |
+| CLI | Interactive menu for provider CRUD, model testing, passkey generation |
+| Password storage | bcrypt-hashed in `api_users` table |

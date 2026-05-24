@@ -36,7 +36,10 @@ class EndpointSettings:
                 continue
             suffix = key[len(ENDPOINT_VAR_PREFIX):].lower()
             if suffix == "active_provider":
-                self.tracker.set_active(val.lower())
+                self.log.notify(
+                    f"active_provider env var ignored (activation is now test-driven): {val.lower()}",
+                    folder="endpoint", file=__file__,
+                )
                 continue
 
             field = None
@@ -90,7 +93,11 @@ class EndpointSettings:
             if opts.get("base_url"):
                 rec.base_url = opts["base_url"]
             if opts.get("models"):
-                rec.models = opts["models"]
+                raw = opts["models"]
+                if isinstance(raw, list):
+                    rec.models = {m: m for m in raw}
+                else:
+                    rec.models = raw
             if opts.get("headers_template"):
                 rec.headers_template = opts["headers_template"]
             if opts.get("auth_type"):
@@ -114,8 +121,7 @@ class EndpointSettings:
 
         active = data.get("active_provider")
         if active:
-            self.tracker.set_active(active)
             self.log.notify(
-                f"Active provider set to {active} from config file",
+                f"Active provider '{active}' from config file ignored (activation is now test-driven)",
                 folder="endpoint", file=__file__,
             )

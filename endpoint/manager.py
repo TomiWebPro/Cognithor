@@ -147,16 +147,19 @@ class EndpointManager:
         try:
             instance = self._get_provider_instance(name)
             start = time.perf_counter()
-            instance.chat(
-                [Message(role="user", content="Respond with only the word: ok")],
-                max_tokens=10,
+            _, usage = instance.chat(
+                [Message(role="user", content="hello")],
+                max_tokens=1,
             )
             status.latency_ms = (time.perf_counter() - start) * 1000
-            status.available = True
-            self.log.normal_operation(
-                f"Health check passed provider={name} latency={status.latency_ms:.0f}ms",
-                folder="endpoint", file=__file__,
-            )
+            status.available = usage.output_tokens == 1
+            if status.available:
+                self.log.normal_operation(
+                    f"Health check passed provider={name} latency={status.latency_ms:.0f}ms",
+                    folder="endpoint", file=__file__,
+                )
+            else:
+                status.error = f"Expected 1 token, got {usage.output_tokens}"
         except Exception as exc:
             status.available = False
             status.error = str(exc)
@@ -166,6 +169,38 @@ class EndpointManager:
             )
         status.last_checked = datetime.datetime.now(datetime.timezone.utc).isoformat()
         return status
+
+    def test_model(self, name: str, model_name: str) -> dict:
+        record = self.tracker.get_provider(name)
+        if record is None:
+            raise ValueError(f"Unknown provider: {name}")
+        if model_name not in record.models:
+            raise ValueError(f"Model '{model_name}' not found in provider '{name}'")
+
+        instance = self._get_provider_instance(name)
+        start = time.perf_counter()
+        try:
+            _, usage = instance.chat(
+                [Message(role="user", content="hello")],
+                model=model_name,
+                max_tokens=1,
+            )
+            latency_ms = (time.perf_counter() - start) * 1000
+            passed = usage.output_tokens == 1
+            result = {"available": passed, "latency_ms": latency_ms, "output_tokens": usage.output_tokens}
+            if not passed:
+                result["error"] = f"Expected 1 token, got {usage.output_tokens}"
+        except Exception as exc:
+            result = {"available": False, "latency_ms": None, "output_tokens": 0, "error": str(exc)}
+
+        record.active_models[model_name] = result["available"]
+        any_active = any(record.active_models.values())
+        record.is_active = any_active
+        self.tracker.save_provider(record)
+        self._instances.pop(name, None)
+
+        result["last_checked"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        return result
 
     def check_all(self) -> list[EndpointStatus]:
         return [self.check_status(p.name) for p in self.tracker.list_providers()]

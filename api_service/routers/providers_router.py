@@ -39,15 +39,19 @@ async def create_provider(
     endpoint_mgr: EndpointManager = Depends(_get_endpoint_mgr),
     _: str = Depends(get_current_user),
 ):
-    existing = endpoint_mgr.tracker.get_provider(payload.get("name", ""))
+    name = payload.get("name")
+    if not name:
+        raise HTTPException(status_code=422, detail="Field 'name' is required")
+    existing = endpoint_mgr.tracker.get_provider(name)
     if existing is not None:
         raise HTTPException(status_code=409, detail="Provider already exists")
     record = ProviderRecord(
-        name=payload["name"],
+        name=name,
         api_key=payload.get("api_key"),
         base_url=payload.get("base_url", ""),
         endpoint_path=payload.get("endpoint_path", "/chat/completions"),
-        models=payload.get("models", []),
+        models=payload.get("models", {}),
+        active_models=payload.get("active_models", {}),
         headers_template=payload.get("headers_template", {}),
         auth_type=payload.get("auth_type", "bearer"),
         auth_header_name=payload.get("auth_header_name"),
@@ -83,6 +87,7 @@ async def update_provider(
         base_url=payload.get("base_url", existing.base_url),
         endpoint_path=payload.get("endpoint_path", existing.endpoint_path),
         models=payload.get("models", existing.models),
+        active_models=payload.get("active_models", existing.active_models),
         headers_template=payload.get("headers_template", existing.headers_template),
         auth_type=payload.get("auth_type", existing.auth_type),
         auth_header_name=payload.get("auth_header_name", existing.auth_header_name),
@@ -116,28 +121,27 @@ async def delete_provider(
     return {"deleted": True}
 
 
-@router.post("/providers/{name}/activate")
-async def activate_provider(
-    name: str,
-    endpoint_mgr: EndpointManager = Depends(_get_endpoint_mgr),
-    _: str = Depends(get_current_user),
-):
-    existing = endpoint_mgr.tracker.get_provider(name)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    endpoint_mgr.tracker.set_active(name)
-    return {"activated": name}
-
-
 @router.post("/providers/{name}/test")
 async def test_provider(
     name: str,
+    payload: dict,
     endpoint_mgr: EndpointManager = Depends(_get_endpoint_mgr),
     _: str = Depends(get_current_user),
 ):
     existing = endpoint_mgr.tracker.get_provider(name)
     if existing is None:
         raise HTTPException(status_code=404, detail="Provider not found")
+
+    model_name = payload.get("model")
+    if model_name:
+        try:
+            result = endpoint_mgr.test_model(name, model_name)
+            return {"provider": name, "model": model_name, **result}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            return {"provider": name, "model": model_name, "available": False, "latency_ms": None, "error": str(e), "last_checked": None}
+
     try:
         status_result = endpoint_mgr.check_status(name)
         return {
@@ -155,3 +159,22 @@ async def test_provider(
             "error": str(e),
             "last_checked": None,
         }
+
+
+@router.post("/providers/{name}/test-model/{model}")
+async def test_model(
+    name: str,
+    model: str,
+    endpoint_mgr: EndpointManager = Depends(_get_endpoint_mgr),
+    _: str = Depends(get_current_user),
+):
+    existing = endpoint_mgr.tracker.get_provider(name)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    try:
+        result = endpoint_mgr.test_model(name, model)
+        return {"provider": name, "model": model, **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        return {"provider": name, "model": model, "available": False, "latency_ms": None, "error": str(e), "last_checked": None}

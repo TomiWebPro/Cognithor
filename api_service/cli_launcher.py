@@ -157,15 +157,16 @@ def cmd_status():
     print(f"  API: {config.get('api_host', '0.0.0.0')}:{config.get('api_port', '4464')}")
 
     providers = tracker.list_providers()
-    active = [p.name for p in providers if p.is_active]
+    active = [p.name for p in providers if any(p.active_models.values()) or p.is_active]
     print(f"\n  Providers ({len(providers)}):")
     rows = []
     for p in providers:
-        a = "*" if p.is_active else " "
+        a = "*" if (any(p.active_models.values()) or p.is_active) else " "
         key = "key:SET" if p.api_key else "key:NOT SET"
-        models = ', '.join(p.models) if p.models else '-'
-        rows.append([f"{a} {p.name}", models, key])
-    _print_table(["Provider", "Available Models", "API Key"], rows)
+        active_m = ', '.join(m for m, ok in p.active_models.items() if ok) if p.active_models else ''
+        models_info = active_m if active_m else (', '.join(p.models) if p.models else '-')
+        rows.append([f"{a} {p.name}", models_info, key])
+    _print_table(["Provider", "Active Models", "API Key"], rows)
     print(f"\n  Active provider: {active[0] if active else '(none)'}")
     print(f"  Auth: POST /token with username + password to receive JWT")
 
@@ -178,7 +179,7 @@ def cmd_providers_menu():
         providers = tracker.list_providers()
         print("  Providers:")
         for p in providers:
-            a = " (*)" if p.is_active else ""
+            a = " (*)" if (any(p.active_models.values()) or p.is_active) else ""
             k = " [KEY SET]" if p.api_key else " [NO KEY]"
             print(f"    {p.name}{a}{k}")
 
@@ -186,7 +187,7 @@ def cmd_providers_menu():
             "Show details",
             "Set API key",
             "Manage models",
-            "Activate provider",
+            "Test model",
             "Delete provider",
             "Back",
         ], 5)
@@ -200,11 +201,12 @@ def cmd_providers_menu():
                 print("Not found")
                 continue
             print(f"\n  {p.name}:")
-            print(f"    Active: {p.is_active}")
+            active_m = ', '.join(m for m, ok in p.active_models.items() if ok) if p.active_models else 'none'
+            print(f"    Active models: {active_m}")
             print(f"    URL: {p.base_url}{p.endpoint_path}")
             print(f"    Auth: {p.auth_type}")
             print(f"    API key set: {bool(p.api_key)}")
-            print(f"    Models ({len(p.models)}): {', '.join(p.models) if p.models else 'none'}")
+            print(f"    Registered models ({len(p.models)}): {', '.join(p.models) if p.models else 'none'}")
         elif choice == 1:
             name = _input("Provider name")
             p = tracker.get_provider(name) if name else None
@@ -226,12 +228,43 @@ def cmd_providers_menu():
                 continue
             cmd_models_menu(tracker, p)
         elif choice == 3:
-            name = _input("Provider name to activate")
-            if name and tracker.get_provider(name):
-                tracker.set_active(name)
-                print(f"Activated: {name}")
-            else:
+            name = _input("Provider name")
+            p = tracker.get_provider(name) if name else None
+            if not p:
                 print("Not found")
+                continue
+            if not p.models:
+                print("No models configured for this provider")
+                continue
+            print("  Select model to test:")
+            model_list = list(p.models.items())
+            for i, (mname, mid) in enumerate(model_list):
+                active_flag = " [active]" if p.active_models.get(mname) else ""
+                print(f"    {i + 1}. {mname} ({mid}){active_flag}")
+            idx = _input(f"Model number [1-{len(model_list)}]")
+            if not idx:
+                print("Cancelled")
+                continue
+            try:
+                idx = int(idx) - 1
+                if idx < 0 or idx >= len(model_list):
+                    print("Invalid number")
+                    continue
+            except ValueError:
+                print("Invalid number")
+                continue
+            test_name, test_id = model_list[idx]
+            print(f"\n  Testing {name}/{test_name}...")
+            try:
+                from endpoint.manager import EndpointManager
+                mgr = EndpointManager(tracker=tracker)
+                result = mgr.test_model(name, test_name)
+                if result["available"]:
+                    print(f"    PASSED latency={result['latency_ms']:.0f}ms output_tokens={result['output_tokens']}")
+                else:
+                    print(f"    FAILED: {result.get('error')}")
+            except Exception as e:
+                print(f"    ERROR: {e}")
         elif choice == 4:
             name = _input("Provider name to DELETE")
             if name and tracker.get_provider(name):
@@ -245,9 +278,11 @@ def cmd_providers_menu():
 def cmd_models_menu(tracker, provider):
     while True:
         print(f"\n--- Models for {provider.name} ---\n")
-        print(f"  Models ({len(provider.models)}):")
-        for i, m in enumerate(provider.models):
-            print(f"    {i + 1}. {m}")
+        items = list(provider.models.items())
+        print(f"  Models ({len(items)}):")
+        for i, (mname, mid) in enumerate(items):
+            active_flag = " [active]" if provider.active_models.get(mname) else ""
+            print(f"    {i + 1}. {mname} ({mid}){active_flag}")
 
         choice = _choice([
             "Add model",
@@ -259,38 +294,42 @@ def cmd_models_menu(tracker, provider):
             tracker.save_provider(provider)
             return
         elif choice == 0:
-            model = _input("Model name")
-            if not model:
+            mname = _input("Model name (e.g. gpt-4o)")
+            if not mname:
                 print("Cancelled")
                 continue
-            if model in provider.models:
-                print(f"Model '{model}' already exists")
+            if mname in provider.models:
+                print(f"Model '{mname}' already exists")
                 continue
-            provider.models.append(model)
+            mid = _input(f"Model ID (e.g. gpt-4o-2024-05-13) [same as name]", mname)
+            provider.models[mname] = mid or mname
             tracker.save_provider(provider)
-            print(f"Added: {model}")
+            print(f"Added: {mname} -> {mid or mname}")
         elif choice == 1:
-            if not provider.models:
+            items = list(provider.models.items())
+            if not items:
                 print("No models to remove")
                 continue
             print("  Select model to remove:")
-            for i, m in enumerate(provider.models):
-                print(f"    {i + 1}. {m}")
-            idx = _input(f"Model number [1-{len(provider.models)}]")
+            for i, (mname, mid) in enumerate(items):
+                print(f"    {i + 1}. {mname} ({mid})")
+            idx = _input(f"Model number [1-{len(items)}]")
             if not idx:
                 print("Cancelled")
                 continue
             try:
                 idx = int(idx) - 1
-                if idx < 0 or idx >= len(provider.models):
+                if idx < 0 or idx >= len(items):
                     print("Invalid number")
                     continue
             except ValueError:
                 print("Invalid number")
                 continue
-            removed = provider.models.pop(idx)
+            removed_name, removed_id = items[idx]
+            del provider.models[removed_name]
+            provider.active_models.pop(removed_name, None)
             tracker.save_provider(provider)
-            print(f"Removed: {removed}")
+            print(f"Removed: {removed_name} ({removed_id})")
 
 
 def cmd_connection_info():
@@ -310,32 +349,48 @@ def cmd_connection_info():
     username = row["username"]
     password = config_mgr.get_config("frontend_password")
 
-    print(f"\n  ┌─────────────────────────────────────────────┐")
-    print(f"  │  FRONTEND CONNECTION                        │")
-    print(f"  │                                             │")
-    print(f"  │  Host:      {host:<20} │")
-    print(f"  │  Port:      {port:<20} │")
-    print(f"  │  Username:  {username:<20} │")
-    if password:
-        print(f"  │  Password:  {password:<20} │")
-    print(f"  │                                             │")
-    print(f"  │  POST  http://{host}:{port}/token        │")
-    print(f"  │  Body:  {{\"username\":\"..\",\"password\":\"..\"}}    │")
-    print(f"  │  →  Returns JWT                             │")
-    print(f"  │                                             │")
-    print(f"  │  All endpoints: Authorization: Bearer <jwt> │")
-    print(f"  └─────────────────────────────────────────────┘")
+    if not password:
+        import secrets
+        import base64 as _b64
+        password = _b64.b64encode(secrets.token_bytes(12)).decode()
+        config_mgr._svc.execute(
+            "INSERT OR REPLACE INTO api_config (key, value) VALUES (?, ?)",
+            ("frontend_password", password),
+        )
+        from api_service.database import hash_password
+        config_mgr._svc.execute(
+            "UPDATE api_users SET hashed_password = ? WHERE username = ?",
+            (hash_password(password), username),
+        )
+        print("  (generated new frontend password)")
 
-    if password:
-        import base64
-        import json
-        blob = json.dumps({
-            "host": host, "port": int(port), "username": username, "password": password,
-        }, separators=(",", ":"))
-        b64 = base64.urlsafe_b64encode(blob.encode()).decode()
-        print(f"\n  Base64 copy-paste for frontend:\n{b64}")
-        _copy_to_clipboard(b64)
-        print("  (copied to clipboard)")
+    import base64
+    import json
+    blob = json.dumps({
+        "host": host, "port": int(port), "username": username, "password": password,
+        "encryption_available": True,
+    }, separators=(",", ":"))
+    b64 = base64.urlsafe_b64encode(blob.encode()).decode()
+
+    print(f"\n  ┌──────────────────────────────────────────────────────────────────────┐")
+    print(f"  │  CREDENTIALS                                                        │")
+    print(f"  │                                                                      │")
+    print(f"  │  Host:      {host:<46} │")
+    print(f"  │  Port:      {port:<46} │")
+    print(f"  │  Username:  {username:<46} │")
+    print(f"  │  Password:  {password:<46} │")
+    print(f"  └──────────────────────────────────────────────────────────────────────┘")
+    print(f"\n  ┌──────────────────────────────────────────────────────────────────────┐")
+    print(f"  │  PASSKEY (copy-paste this into the frontend, or scan QR at            │")
+    print(f"  │  /onboarding/passkey.qr)                                              │")
+    print(f"  │                                                                      │")
+    print(f"  │  {b64:<68} │")
+    print(f"  │                                                                      │")
+    print(f"  │  →  Username: {username:<50} │")
+    print(f"  │  →  Password: {password:<50} │")
+    print(f"  └──────────────────────────────────────────────────────────────────────┘")
+    _copy_to_clipboard(b64)
+    print("  (passkey copied to clipboard)")
 
 
 def cmd_init():
@@ -398,6 +453,7 @@ def cmd_init():
             base_url                TEXT NOT NULL,
             endpoint_path           TEXT DEFAULT '/chat/completions',
             models                  TEXT,
+            active_models           TEXT DEFAULT '{}',
             headers_template        TEXT DEFAULT '{}',
             auth_type               TEXT DEFAULT 'bearer',
             auth_header_name        TEXT,
@@ -480,16 +536,16 @@ def cmd_init():
         now = _dt.datetime.now(_dt.timezone.utc).isoformat()
         svc.execute(
             """INSERT INTO providers
-                (name, api_key, base_url, endpoint_path, models,
+                (name, api_key, base_url, endpoint_path, models, active_models,
                  headers_template, auth_type, auth_header_name, body_template,
                  response_content_path, response_usage_input_path,
                  response_usage_output_path, response_usage_cost_path,
                  is_streaming, is_active, max_retries, timeout_seconds, max_concurrent,
                  created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 rec.name, rec.api_key, rec.base_url, rec.endpoint_path,
-                json.dumps(rec.models),
+                json.dumps(rec.models), json.dumps(rec.active_models),
                 json.dumps(rec.headers_template), rec.auth_type,
                 rec.auth_header_name, rec.body_template,
                 rec.response_content_path, rec.response_usage_input_path,

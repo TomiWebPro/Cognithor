@@ -80,6 +80,15 @@ Provides `SecureDbService`, a deterministic non-blocking wrapper around `sqlite3
 
 **`backup(target_path)`**: Creates a point-in-time backup of the database using SQLite's online backup API (`src_conn.backup(dst_conn)`). The source database can remain in use during the backup — reads and writes can proceed concurrently. The target file's parent directory is created automatically.
 
+**`toggle_encryption(enable)`**: Converts an existing database between plain-text and encrypted (SQLCipher) format, or vice versa. Works by:
+1. Connecting to the source database with the current encryption setting.
+2. If enabling encryption, ensuring a key exists in the keyring (via `get_or_create_key`).
+3. Creating a temporary database with the target driver and encryption key.
+4. Using `src_conn.iterdump()` to dump all data and `dst_conn.executescript()` to recreate it.
+5. Renaming the original to `.bak`, the temp to the original path, then deleting the `.bak`.
+
+Returns `True` if a conversion was performed, `False` if already in the requested state. The original database is preserved as a backup until the operation completes successfully.
+
 ## File: __init__.py
 
 Exports the public API: `SecureDbService`, `SERVICE_NAME`, `KEY_NAME`, `FALLBACK_KEY`, `get_key`, `set_key`, `has_key`, `get_or_create_key`, `resolve_key`.
@@ -93,6 +102,7 @@ Exports the public API: `SecureDbService`, `SERVICE_NAME`, `KEY_NAME`, `FALLBACK
 | **Non-blocking writes (retry)** | If a `database is locked` error occurs (e.g., another process is writing), the service retries with a configurable delay instead of immediately failing. |
 | **Auto-cleanup** | Connections are always closed (via context manager `finally`). Transactions are always committed or rolled back. No dangling connections. |
 | **Online backup** | `backup()` uses SQLite's built-in online backup API, allowing the database to remain in use during the backup process. |
+| **Encryption toggle** | `toggle_encryption()` converts between plain-text and encrypted SQLCipher using `iterdump()` + recreate, with automatic key management. |
 
 ## Encryption key resolution order
 

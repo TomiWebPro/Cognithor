@@ -94,3 +94,6 @@ Rules:
 | file | source file name |
 | line | source code line number (if possible) |
 | raw_error | full unmodified error output/stack trace |
+| message | human-readable description of the event |
+
+The database table also includes `id` (auto-increment primary key) and `created_at` (auto-set timestamp).

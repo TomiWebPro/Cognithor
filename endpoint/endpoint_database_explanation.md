@@ -2,7 +2,7 @@
 
 This document provides a natural language explanation of the database schema used in the Cognithor endpoint module.
 
-The database is an optionally encrypted SQLite database (`data/cognithor.db`) managed via the `Tracker` class, which delegates all low-level access to `SecureDbService` (from the `secure_db_service` package). It is created automatically on first use. It contains three tables, each serving a specific purpose:
+The database is an optionally encrypted SQLite database (`data/cognithor.db`) managed via the `Tracker` class, which delegates all low-level access to `SecureDbService` (from the `secure_db_service` package). It is created automatically on first use. It contains four tables, each serving a specific purpose:
 
 ## 1. providers
 
@@ -15,7 +15,8 @@ Columns include:
 - **api_key**: API key for authentication (text, nullable). Stored here so it can be set via environment variables or config file, rather than hardcoded.
 - **base_url**: Base URL for the provider's API, e.g. "https://api.openai.com/v1" (text, not null). Swappable without modifying code.
 - **endpoint_path**: The path appended to base_url for chat completions, e.g. "/chat/completions", "/api/chat", "/messages" (text, default "/chat/completions").
-- **models**: JSON array of model names available for this provider, e.g. `["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"]` (text, nullable).
+- **models**: JSON object mapping model display names to model IDs, e.g. `{"gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini"}` (text, nullable). Previously a JSON array — a migration converts old list-format rows to dicts automatically on schema version 1.
+- **active_models**: JSON object tracking which models have been tested and are reachable, e.g. `{"gpt-4o": true, "gpt-4o-mini": false}` (text, default "{}").
 - **headers_template**: JSON string of extra HTTP headers to send with every request, e.g. `{"HTTP-Referer": "https://github.com/tomi/cognithor"}` (text, default "{}").
 - **auth_type**: Authentication method. One of "bearer" (sends `Authorization: Bearer <api_key>`), "header" (sends `<auth_header_name>: <api_key>`), or "none" (no auth) (text, default "bearer").
 - **auth_header_name**: Header name used when `auth_type` is "header", e.g. "x-api-key" for Anthropic (text, nullable).
@@ -39,16 +40,14 @@ Columns include:
 
 ### Default providers seeded on init
 
-On first database creation, four providers are automatically seeded:
+On first database creation, four providers are automatically seeded (only if no provider with that name already exists):
 
-| name | base_url | auth_type | endpoint_path | models |
-|------|----------|-----------|---------------|--------|
-| openai | https://api.openai.com/v1 | bearer | /chat/completions | gpt-4o, gpt-4o-mini, text-embedding-3-small |
-| openrouter | https://openrouter.ai/api/v1 | bearer | /chat/completions | openai/gpt-4o-mini, anthropic/claude-3.5-sonnet, openai/gpt-4o |
-| ollama | http://localhost:11434 | none | /api/chat | llama3, llava |
-| anthropic | https://api.anthropic.com/v1 | header | /messages | claude-haiku-3-5-20241022, claude-sonnet-4-20250514 |
-
-These defaults are only inserted if no provider with that name already exists, so they do not overwrite existing configurations.
+| name | base_url | auth_type | auth_header_name | endpoint_path | models (dict) | headers_template | body_template special |
+|------|----------|-----------|-----------------|---------------|---------------|-----------------|----------------------|
+| openai | https://api.openai.com/v1 | bearer | — | /chat/completions | gpt-4o → gpt-4o, gpt-4o-mini → gpt-4o-mini, text-embedding-3-small → text-embedding-3-small | `{}` | Standard OpenAI format |
+| openrouter | https://openrouter.ai/api/v1 | bearer | — | /chat/completions | openai/gpt-4o-mini → openai/gpt-4o-mini, anthropic/claude-3.5-sonnet → anthropic/claude-3.5-sonnet, openai/gpt-4o → openai/gpt-4o | `{"HTTP-Referer": "..."}` | Standard OpenAI format |
+| ollama | http://localhost:11434 | none | — | /api/chat | llama3 → llama3, llava → llava | `{}` | Uses `options` nesting, streaming enabled |
+| anthropic | https://api.anthropic.com/v1 | header | x-api-key | /messages | claude-haiku-3-5-20241022 → claude-haiku-3-5-20241022, claude-sonnet-4-20250514 → claude-sonnet-4-20250514 | `{"anthropic-version": "2023-06-01"}` | Uses `${system_prompt}` extraction |
 
 ### How the body template works
 
@@ -63,12 +62,12 @@ Example — OpenAI template:
 {"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}, "max_tokens": ${max_tokens}}
 ```
 
-Example — Anthropic template (system prompt extracted from messages):
+Example — Anthropic template (system prompt extracted from messages array):
 ```
 {"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}, "max_tokens": ${max_tokens}, "system": "${system_prompt}"}
 ```
 
-Example — Ollama template (streaming, options nested):
+Example — Ollama template (streaming, options nested, no system prompt):
 ```
 {"model": "${model}", "messages": ${messages_json}, "options": {"temperature": ${temperature}, "num_predict": ${max_tokens}}}
 ```
@@ -108,7 +107,13 @@ Columns include:
 - The `context` field is intended to group related calls together (e.g., all calls made during the processing of a single file).
 - Unlike the Backend_w._DB `usage` table, this table tracks individual calls rather than conversations, keeping the schema simple and generic.
 
-## 3. health_checks
+## 3. schema_version
+
+Tracks the current schema version for database migrations. Stored as a single-row table:
+
+- **version**: Integer version number. Starts at 0 (no version). Migration to version 1 converts any `models` column values from JSON arrays to JSON dicts (e.g. `["gpt-4o"]` → `{"gpt-4o": "gpt-4o"}`).
+
+## 4. health_checks
 
 Stores the results of periodic health/latency checks performed against configured providers. Used to determine provider availability for fallback logic.
 
@@ -123,12 +128,17 @@ Columns include:
 
 ### How health checks work
 
-The `check_status()` method in `EndpointManager` sends a minimal chat request ("Respond with only the word: ok" with max_tokens=10) to the provider. If it succeeds, the provider is marked available with the measured latency. If it raises any exception, the provider is marked unavailable with the error message stored.
+The `check_status()` method in `EndpointManager` sends a minimal chat request (message: "hello", max_tokens=1) to the provider. If it succeeds and exactly 1 output token is returned, the provider is marked available with the measured latency. If it raises any exception, the provider is marked unavailable with the error message stored.
+
+The `test_model()` method does the same but updates the `active_models` flag for that specific model in the provider record.
 
 ## How the tables relate
 
 ```
 providers (configuration)
+    │
+    ├── schema_version (migration tracking)
+    │     single-row version counter
     │
     ├── usage_log (tracks each API call)
     │     provider → providers.name
@@ -137,7 +147,7 @@ providers (configuration)
           provider → providers.name
 ```
 
-`usage_log` and `health_checks` reference `providers` by name. There is no formal foreign key constraint (to keep schema flexible for dynamic provider names), but the application code maintains consistency.
+`schema_version` is a standalone migration tracker (single row). `usage_log` and `health_checks` reference `providers` by name. There is no formal foreign key constraint (to keep schema flexible for dynamic provider names), but the application code maintains consistency.
 
 ## SecureDbService layer
 
@@ -168,10 +178,11 @@ If the `keyring` library is not installed, all these functions gracefully return
 
 The database is created at `data/cognithor.db` relative to the project root (customizable via the `db_path` parameter). On creation:
 
-1. All three tables are created if they do not exist.
+1. All four tables (`providers`, `schema_version`, `usage_log`, `health_checks`) are created if they do not exist.
 2. WAL mode is enabled for better concurrent read performance.
 3. Foreign keys pragma is enabled for data integrity.
-4. The four default providers are seeded only if no provider with that name exists.
+4. Schema migration to version 1 converts any list-format `models` columns to dict format.
+5. The four default providers are seeded only if no provider with that name exists.
 
 When `use_encryption=True`, the database file is created as a SQLCipher-encrypted database using the resolved encryption key.
 
@@ -197,7 +208,8 @@ tracker.save_provider(ProviderRecord(
     name="gemini",
     base_url="https://generativelanguage.googleapis.com/v1beta",
     endpoint_path="/models/gemini-pro:generateContent",
-    models=["gemini-pro"],
+    models={"gemini-pro": "gemini-pro"},
+    active_models={},
     auth_type="header",
     auth_header_name="x-goog-api-key",
     body_template='{"contents": ${messages_json}, "generationConfig": {"temperature": ${temperature}, "maxOutputTokens": ${max_tokens}}}',

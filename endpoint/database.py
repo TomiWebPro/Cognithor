@@ -20,20 +20,19 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="openai",
         base_url="https://api.openai.com/v1",
         endpoint_path="/chat/completions",
-        models=["gpt-4o", "gpt-4o-mini", "text-embedding-3-small"],
+        models={"gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini", "text-embedding-3-small": "text-embedding-3-small"},
         headers_template={},
         auth_type="bearer",
         body_template='{"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}, "max_tokens": ${max_tokens}}',
         response_content_path="choices.0.message.content",
         response_usage_input_path="usage.prompt_tokens",
         response_usage_output_path="usage.completion_tokens",
-        is_active=True,
     ),
     ProviderRecord(
         name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         endpoint_path="/chat/completions",
-        models=["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "openai/gpt-4o"],
+        models={"openai/gpt-4o-mini": "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet": "anthropic/claude-3.5-sonnet", "openai/gpt-4o": "openai/gpt-4o"},
         headers_template={"HTTP-Referer": "https://github.com/tomi/cognithor"},
         auth_type="bearer",
         body_template='{"model": "${model}", "messages": ${messages_json}, "temperature": ${temperature}, "max_tokens": ${max_tokens}}',
@@ -45,7 +44,7 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="ollama",
         base_url="http://localhost:11434",
         endpoint_path="/api/chat",
-        models=["llama3", "llava"],
+        models={"llama3": "llama3", "llava": "llava"},
         headers_template={},
         auth_type="none",
         body_template='{"model": "${model}", "messages": ${messages_json}, "options": {"temperature": ${temperature}, "num_predict": ${max_tokens}}}',
@@ -58,7 +57,7 @@ DEFAULT_PROVIDERS: list[ProviderRecord] = [
         name="anthropic",
         base_url="https://api.anthropic.com/v1",
         endpoint_path="/messages",
-        models=["claude-haiku-3-5-20241022", "claude-sonnet-4-20250514"],
+        models={"claude-haiku-3-5-20241022": "claude-haiku-3-5-20241022", "claude-sonnet-4-20250514": "claude-sonnet-4-20250514"},
         headers_template={"anthropic-version": "2023-06-01"},
         auth_type="header",
         auth_header_name="x-api-key",
@@ -104,6 +103,7 @@ class Tracker:
                 base_url                TEXT NOT NULL,
                 endpoint_path           TEXT DEFAULT '/chat/completions',
                 models                  TEXT,
+                active_models           TEXT DEFAULT '{}',
                 headers_template        TEXT DEFAULT '{}',
                 auth_type               TEXT DEFAULT 'bearer',
                 auth_header_name        TEXT,
@@ -119,6 +119,10 @@ class Tracker:
                 max_concurrent          INTEGER DEFAULT 5,
                 created_at              TEXT DEFAULT (datetime('now')),
                 updated_at              TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
             );
 
             CREATE TABLE IF NOT EXISTS usage_log (
@@ -145,6 +149,27 @@ class Tracker:
             );
         """)
 
+        self._migrate_db()
+
+    def _migrate_db(self) -> None:
+        row = self._svc.query_one("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
+        version = row["version"] if row else 0
+
+        if version < 1:
+            rows = self._svc.query("SELECT id, models FROM providers WHERE models IS NOT NULL")
+            for r in rows:
+                try:
+                    parsed = json.loads(r["models"])
+                    if isinstance(parsed, list):
+                        migrated = {m: m for m in parsed}
+                        self._svc.execute(
+                            "UPDATE providers SET models = ? WHERE id = ?",
+                            (json.dumps(migrated), r["id"]),
+                        )
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            self._svc.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (1)")
+
         for rec in DEFAULT_PROVIDERS:
             existing = self._svc.query_one(
                 "SELECT id FROM providers WHERE name = ?", (rec.name,)
@@ -160,15 +185,15 @@ class Tracker:
     def _insert_provider(self, rec: ProviderRecord) -> None:
         self._svc.execute(
             """INSERT INTO providers
-                (name, api_key, base_url, endpoint_path, models,
+                (name, api_key, base_url, endpoint_path, models, active_models,
                  headers_template, auth_type, auth_header_name, body_template,
                  response_content_path, response_usage_input_path,
                  response_usage_output_path, response_usage_cost_path,
                  is_streaming, is_active, max_retries, timeout_seconds, max_concurrent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 rec.name, rec.api_key, rec.base_url, rec.endpoint_path,
-                json.dumps(rec.models),
+                json.dumps(rec.models), json.dumps(rec.active_models),
                 json.dumps(rec.headers_template), rec.auth_type,
                 rec.auth_header_name, rec.body_template,
                 rec.response_content_path, rec.response_usage_input_path,
@@ -187,12 +212,16 @@ class Tracker:
         return self._row_to_record(row)
 
     def get_active_provider(self) -> Optional[ProviderRecord]:
-        row = self._svc.query_one(
-            "SELECT * FROM providers WHERE is_active = 1 LIMIT 1"
-        )
-        if row is None:
-            return None
-        return self._row_to_record(row)
+        rows = list(self._svc.query("SELECT * FROM providers ORDER BY name"))
+        for row in rows:
+            rec = self._row_to_record(row)
+            if any(rec.active_models.values()):
+                return rec
+        for row in rows:
+            rec = self._row_to_record(row)
+            if rec.is_active:
+                return rec
+        return None
 
     def list_providers(self) -> list[ProviderRecord]:
         rows = self._svc.query("SELECT * FROM providers ORDER BY name")
@@ -211,6 +240,7 @@ class Tracker:
                     base_url = COALESCE(?, base_url),
                     endpoint_path = COALESCE(?, endpoint_path),
                     models = COALESCE(?, models),
+                    active_models = COALESCE(?, active_models),
                     headers_template = COALESCE(?, headers_template),
                     auth_type = COALESCE(?, auth_type),
                     auth_header_name = COALESCE(?, auth_header_name),
@@ -228,7 +258,7 @@ class Tracker:
                 WHERE name = ?""",
                 (
                     rec.api_key, rec.base_url, rec.endpoint_path,
-                    json.dumps(rec.models),
+                    json.dumps(rec.models), json.dumps(rec.active_models),
                     json.dumps(rec.headers_template), rec.auth_type,
                     rec.auth_header_name, rec.body_template,
                     rec.response_content_path, rec.response_usage_input_path,
@@ -248,33 +278,44 @@ class Tracker:
 
         return rec
 
-    def set_active(self, name: str) -> None:
-        self._svc.execute("UPDATE providers SET is_active = 0")
-        self._svc.execute(
-            "UPDATE providers SET is_active = 1 WHERE name = ?", (name,)
-        )
-
     def _row_to_record(self, row) -> ProviderRecord:
         def _j(val):
             if val is None:
                 return {}
             return json.loads(val) if isinstance(val, str) and val.strip() else {}
-        def _jl(val):
+        def _jd(val):
             if val is None:
-                return []
+                return {}
             if isinstance(val, str) and val.strip():
                 parsed = json.loads(val)
+                if isinstance(parsed, list):
+                    return {m: m for m in parsed}
                 if isinstance(parsed, dict):
-                    return list(parsed.values())
-                return parsed
-            return []
+                    return {str(k): str(v) for k, v in parsed.items()}
+            return {}
+        def _jb(val):
+            if val is None:
+                return {}
+            if isinstance(val, str) and val.strip():
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        return {str(k): bool(v) for k, v in parsed.items()}
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return {}
+        try:
+            _active = _jb(row["active_models"])
+        except (KeyError, IndexError):
+            _active = {}
         return ProviderRecord(
             id=row["id"],
             name=row["name"],
             api_key=row["api_key"],
             base_url=row["base_url"],
             endpoint_path=row["endpoint_path"],
-            models=_jl(row["models"]),
+            models=_jd(row["models"]),
+            active_models=_active,
             headers_template=_j(row["headers_template"]),
             auth_type=row["auth_type"],
             auth_header_name=row["auth_header_name"],
