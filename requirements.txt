@@ -31,6 +31,7 @@ python-dotenv==1.2.2
 python-jose==3.5.0
 python-multipart==0.0.29
 PyYAML==6.0.3
+rich>=13.0.0
 pyzbar==0.1.9
 qrcode==8.2
 rsa==4.9.1

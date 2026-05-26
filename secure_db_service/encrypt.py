@@ -8,17 +8,24 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from api_service.database import ApiConfigManager
     from endpoint.database import Tracker
 
+ProgressCallback = Callable[[int, int], None]
 
-def encrypt_databases(config_mgr: ApiConfigManager, tracker: Tracker) -> None:
+
+def encrypt_databases(
+    config_mgr: ApiConfigManager,
+    tracker: Tracker,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> None:
     """Encrypt both main and log databases. Services must be in plain-text mode."""
-    config_mgr.toggle_encryption(True)
-    tracker.log.db.toggle_encryption(True)
+    config_mgr.toggle_encryption(True, progress_callback)
+    tracker.toggle_encryption(True, progress_callback)
+    tracker.log.db.toggle_encryption(True, progress_callback)
     config_mgr.set_config("database_encryption_enabled", "true")
 
 

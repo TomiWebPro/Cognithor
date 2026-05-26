@@ -7,9 +7,11 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 from .key_manager import FALLBACK_KEY, get_or_create_key, resolve_key
+
+ProgressCallback = Callable[[int, int], None]
 
 
 def _sql_escape(val: str) -> str:
@@ -256,7 +258,13 @@ class SecureDbService:
         )
         return row is not None
 
-    def _transfer(self, src_conn, dst_path, dst_key):
+    def _transfer(
+        self,
+        src_conn,
+        dst_path,
+        dst_key,
+        progress_callback: Optional[ProgressCallback] = None,
+    ):
         driver = self._get_driver()
         dst_conn = driver.connect(str(dst_path))
         try:
@@ -265,8 +273,10 @@ class SecureDbService:
             dst_conn.execute("PRAGMA journal_mode=DELETE")
             dst_conn.execute("PRAGMA foreign_keys=OFF")
 
-            dst_conn.executescript("".join(src_conn.iterdump()))
-            dst_conn.commit()
+            script = "".join(src_conn.iterdump())
+            dst_conn.executescript(script)
+            if progress_callback:
+                progress_callback(1, 1)
 
             dst_conn.execute("PRAGMA foreign_keys=ON")
             dst_conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
@@ -275,7 +285,11 @@ class SecureDbService:
             raise
         dst_conn.close()
 
-    def toggle_encryption(self, enable: bool) -> bool:
+    def toggle_encryption(
+        self,
+        enable: bool,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> bool:
         with self._lock:
             if enable == self.use_encryption:
                 return False
@@ -312,7 +326,7 @@ class SecureDbService:
                     dst_key = None
 
                 self._cached_key = dst_key
-                self._transfer(src_conn, temp_path, dst_key)
+                self._transfer(src_conn, temp_path, dst_key, progress_callback)
             except Exception:
                 if temp_path.exists():
                     temp_path.unlink()

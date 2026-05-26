@@ -1,9 +1,11 @@
 from __future__ import annotations
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from secure_db_service import SecureDbService
+
+ProgressCallback = Callable[[int, int], None]
 
 from .models import LogEntry, LogLevel
 
@@ -160,15 +162,19 @@ class LogDatabase:
         )
         return cur.rowcount
 
-    def toggle_encryption(self, enable: bool) -> bool:
+    def toggle_encryption(
+        self,
+        enable: bool,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> bool:
         try:
-            return self._svc.toggle_encryption(enable)
+            return self._svc.toggle_encryption(enable, progress_callback)
         except Exception as e:
             err = str(e).lower()
             if "not a database" in err or "file is not a database" in err:
                 self._recover()
                 self._init_db()
-                return self._svc.toggle_encryption(enable)
+                return self._svc.toggle_encryption(enable, progress_callback)
             raise
 
     def vacuum(self) -> None:

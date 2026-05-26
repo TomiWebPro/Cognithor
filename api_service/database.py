@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import secrets
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+ProgressCallback = Callable[[int, int], None]
 
 import bcrypt
 from secure_db_service import SecureDbService
@@ -40,18 +42,22 @@ class ApiConfigManager:
         service_name: str = "Cognithor",
         key_name: str = "db_key",
         key_env_var: Optional[str] = None,
+        svc: Optional[SecureDbService] = None,
     ):
         self.db_path = db_path or DB_PATH
-        self._svc = SecureDbService(
-            db_path=self.db_path,
-            use_encryption=use_encryption,
-            wal_mode=True,
-            retry_attempts=5,
-            retry_delay_seconds=0.1,
-            service_name=service_name,
-            key_name=key_name,
-            key_env_var=key_env_var,
-        )
+        if svc is not None:
+            self._svc = svc
+        else:
+            self._svc = SecureDbService(
+                db_path=self.db_path,
+                use_encryption=use_encryption,
+                wal_mode=True,
+                retry_attempts=5,
+                retry_delay_seconds=0.1,
+                service_name=service_name,
+                key_name=key_name,
+                key_env_var=key_env_var,
+            )
         self._init_tables()
         self._seed_defaults()
 
@@ -115,8 +121,12 @@ class ApiConfigManager:
             (key, value),
         )
 
-    def toggle_encryption(self, enable: bool) -> bool:
-        return self._svc.toggle_encryption(enable)
+    def toggle_encryption(
+        self,
+        enable: bool,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> bool:
+        return self._svc.toggle_encryption(enable, progress_callback)
 
     def get_all_config(self) -> dict[str, str]:
         rows = self._svc.query("SELECT key, value FROM api_config")

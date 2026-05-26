@@ -2,7 +2,9 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+ProgressCallback = Callable[[int, int], None]
 
 from log_service import LogService
 from log_service.database import LogDatabase
@@ -186,19 +188,20 @@ class Tracker:
                         )
                 except (json.JSONDecodeError, TypeError):
                     pass
-            self._svc.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (1)")
 
-        for rec in DEFAULT_PROVIDERS:
-            existing = self._svc.query_one(
-                "SELECT id FROM providers WHERE name = ?", (rec.name,)
-            )
-            if existing:
-                continue
-            self._insert_provider(rec)
-            self.log.notify(
-                f"Seeded default provider: {rec.name}",
-                folder="endpoint/database", file=__file__,
-            )
+            for rec in DEFAULT_PROVIDERS:
+                existing = self._svc.query_one(
+                    "SELECT id FROM providers WHERE name = ?", (rec.name,)
+                )
+                if existing:
+                    continue
+                self._insert_provider(rec)
+                self.log.notify(
+                    f"Seeded default provider: {rec.name}",
+                    folder="endpoint/database", file=__file__,
+                )
+
+            self._svc.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (1)")
 
     def _insert_provider(self, rec: ProviderRecord) -> None:
         self._svc.execute(
@@ -418,8 +421,12 @@ class Tracker:
             "SELECT * FROM health_checks ORDER BY id DESC LIMIT ?", (limit,)
         )
 
-    def toggle_encryption(self, enable: bool) -> bool:
-        return self._svc.toggle_encryption(enable)
+    def toggle_encryption(
+        self,
+        enable: bool,
+        progress_callback: Optional[ProgressCallback] = None,
+    ) -> bool:
+        return self._svc.toggle_encryption(enable, progress_callback)
 
     def backup(self, target_path: str | Path) -> None:
         self._svc.backup(target_path)
