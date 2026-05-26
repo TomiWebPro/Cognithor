@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from log_service import LogService
+from log_service.database import LogDatabase
 from secure_db_service import SecureDbService
 
 from .models import ProviderRecord
@@ -80,7 +81,6 @@ class Tracker:
         log_service: Optional[LogService] = None,
         svc: Optional[SecureDbService] = None,
     ):
-        self.log = log_service or LogService()
         self.db_path = db_path or DB_PATH
         self._svc = svc or SecureDbService(
             db_path=self.db_path,
@@ -92,6 +92,24 @@ class Tracker:
             key_name=key_name,
             key_env_var=key_env_var,
         )
+
+        if log_service is not None:
+            self.log = log_service
+        elif svc is not None:
+            self.log = LogService(
+                database=LogDatabase(
+                    use_encryption=self._svc.use_encryption,
+                    key_name=key_name,
+                ),
+            )
+        else:
+            self.log = LogService(
+                database=LogDatabase(
+                    use_encryption=use_encryption,
+                    key_name=key_name,
+                ),
+            )
+
         self._init_db()
 
     def _init_db(self) -> None:

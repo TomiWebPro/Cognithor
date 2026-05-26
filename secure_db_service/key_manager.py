@@ -9,11 +9,16 @@ KEY_NAME = "db_key"
 FALLBACK_KEY = "debug_key_please_change_me"
 
 
+logger = __import__("logging").getLogger(__name__)
+
+
 def _keyring_available() -> bool:
     try:
-        import keyring
+        import keyring as _kr
+
+        _kr.get_keyring()
         return True
-    except ImportError:
+    except Exception:
         return False
 
 
@@ -27,7 +32,8 @@ def get_key(
     try:
         val = keyring.get_password(service_name, key_name)
         return val if val else None
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to get key '%s/%s': %s", service_name, key_name, e)
         return None
 
 
@@ -42,7 +48,25 @@ def set_key(
     try:
         keyring.set_password(service_name, key_name, key)
         return True
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to set key '%s/%s': %s", service_name, key_name, e)
+        return False
+
+
+def delete_key(
+    service_name: str = SERVICE_NAME,
+    key_name: str = KEY_NAME,
+) -> bool:
+    if not get_key(service_name, key_name):
+        return True
+    if not _keyring_available():
+        return False
+    import keyring
+    try:
+        keyring.delete_password(service_name, key_name)
+        return True
+    except Exception as e:
+        logger.error("Failed to delete key '%s/%s': %s", service_name, key_name, e)
         return False
 
 
@@ -62,8 +86,15 @@ def get_or_create_key(
     if existing:
         return existing
     new_key = secrets.token_hex(length)
-    set_key(new_key, service_name, key_name)
-    return new_key
+    if set_key(new_key, service_name, key_name):
+        return new_key
+    logger.error(
+        "Could not store encryption key '%s/%s' in keyring. "
+        "Falling back to default key.",
+        service_name,
+        key_name,
+    )
+    return FALLBACK_KEY
 
 
 def resolve_key(

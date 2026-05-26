@@ -1,15 +1,68 @@
 from __future__ import annotations
 import logging
+import os
+
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .key_manager import get_or_create_key, resolve_key
+from .key_manager import FALLBACK_KEY, delete_key, get_or_create_key, resolve_key
+
+
+def _sql_escape(val: str) -> str:
+    return val.replace("'", "''")
 
 
 logger = logging.getLogger(__name__)
+
+
+class DegradedError(RuntimeError):
+    """Raised when database is corrupted and service enters degraded mode."""
+
+
+class _DegradedCursor:
+    lastrowid = 0
+    rowcount = -1
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return None
+
+    def __iter__(self):
+        return iter([])
+
+
+class _DegradedConnection:
+    row_factory = None
+
+    def execute(self, sql, params=None):
+        return _DegradedCursor()
+
+    def executescript(self, sql):
+        pass
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+    def iterdump(self):
+        return iter([])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
 
 
 class SecureDbService:
@@ -33,8 +86,22 @@ class SecureDbService:
         self.key_name = key_name
         self.key_env_var = key_env_var
         self._cipher_module = None
+        self._cipher_available = False
+        self._cached_key: str | None = None
+        self._generation = 0
+        self._lock = threading.Lock()
+
+        self.degraded = False
+        self.degraded_reason = ""
 
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def is_degraded(self) -> bool:
+        return self.degraded
+
+    def recover(self) -> None:
+        self.degraded = False
+        self.degraded_reason = ""
 
     def _get_driver(self):
         if not self.use_encryption:
@@ -44,11 +111,13 @@ class SecureDbService:
         try:
             from pysqlcipher3 import dbapi2 as cipher
             self._cipher_module = cipher
+            self._cipher_available = True
             return cipher
         except ImportError:
             try:
                 from sqlcipher3 import dbapi2 as cipher
                 self._cipher_module = cipher
+                self._cipher_available = True
                 return cipher
             except ImportError:
                 logger.warning(
@@ -59,14 +128,21 @@ class SecureDbService:
                 return sqlite3
 
     def _get_encryption_key(self) -> Optional[str]:
-        return resolve_key(
-            use_encryption=self.use_encryption,
+        if not self.use_encryption:
+            return None
+        resolved = resolve_key(
+            use_encryption=True,
             service_name=self.service_name,
             key_name=self.key_name,
             env_var=self.key_env_var,
         )
+        if resolved == FALLBACK_KEY and self._cached_key:
+            return self._cached_key
+        return resolved
 
     def connect(self) -> sqlite3.Connection:
+        if self.degraded:
+            return _DegradedConnection()
         driver = self._get_driver()
         encryption_key = self._get_encryption_key()
 
@@ -75,7 +151,7 @@ class SecureDbService:
                 conn = driver.connect(str(self.db_path))
 
                 if encryption_key:
-                    conn.execute(f"PRAGMA key = '{encryption_key}'")
+                    conn.execute(f"PRAGMA key = '{_sql_escape(encryption_key)}'")
 
                 if self.wal_mode:
                     conn.execute("PRAGMA journal_mode=WAL")
@@ -99,6 +175,14 @@ class SecureDbService:
                     raise
 
             except Exception as e:
+                err_str = str(e).lower()
+                if "file is not a database" in err_str or "not a database" in err_str:
+                    reason = (
+                        f"Database file {self.db_path} is corrupted or "
+                        f"encrypted with wrong key: {e}"
+                    )
+                    logger.critical(reason)
+                    raise
                 logger.error("Unexpected error connecting to database: %s", e)
                 raise
 
@@ -172,45 +256,94 @@ class SecureDbService:
         )
         return row is not None
 
-    def toggle_encryption(self, enable: bool) -> bool:
-        if enable == self.use_encryption:
-            return False
-
-        if enable:
-            get_or_create_key(service_name=self.service_name, key_name=self.key_name)
-
-        src_conn = self.connect()
-
+    def _transfer(self, src_conn, dst_path, dst_key):
+        driver = self._get_driver()
+        dst_conn = driver.connect(str(dst_path))
         try:
-            self.use_encryption = enable
-            self._cipher_module = None
+            if dst_key:
+                dst_conn.execute(f"PRAGMA key = '{_sql_escape(dst_key)}'")
+            dst_conn.execute("PRAGMA journal_mode=DELETE")
+            dst_conn.execute("PRAGMA foreign_keys=OFF")
+
+            dst_conn.executescript("".join(src_conn.iterdump()))
+            dst_conn.commit()
+
+            dst_conn.execute("PRAGMA foreign_keys=ON")
+            dst_conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        except Exception:
+            dst_conn.close()
+            raise
+        dst_conn.close()
+
+    def toggle_encryption(self, enable: bool) -> bool:
+        with self._lock:
+            if enable == self.use_encryption:
+                return False
+
+            if self.degraded:
+                raise DegradedError(
+                    f"Cannot toggle encryption: database is in degraded mode: {self.degraded_reason}"
+                )
+
+            generated_key: str | None = None
+            if enable:
+                delete_key(
+                    service_name=self.service_name,
+                    key_name=self.key_name,
+                )
+                generated_key = get_or_create_key(
+                    service_name=self.service_name,
+                    key_name=self.key_name,
+                )
 
             import time as _time
             temp_path = self.db_path.with_suffix(f".{int(_time.time())}.tmp")
+            backup_path = self.db_path.with_suffix(".bak")
 
-            dst_driver = self._get_driver()
-            dst_conn = dst_driver.connect(str(temp_path))
+            old_use_encryption = self.use_encryption
+            old_cipher_module = self._cipher_module
+
+            src_conn = self.connect()
             try:
-                key = self._get_encryption_key()
-                if key:
-                    dst_conn.execute(f"PRAGMA key = '{key}'")
-                dst_conn.execute("PRAGMA journal_mode=WAL")
-                dst_conn.execute("PRAGMA foreign_keys=ON")
+                self.use_encryption = enable
+                self._cipher_module = None
 
-                script = "".join(src_conn.iterdump())
-                dst_conn.executescript(script)
-                dst_conn.commit()
-            finally:
-                dst_conn.close()
-        finally:
+                if enable:
+                    dst_key = self._get_encryption_key()
+                    if dst_key == FALLBACK_KEY and generated_key is not None:
+                        dst_key = generated_key
+                else:
+                    dst_key = None
+
+                self._cached_key = dst_key
+                self._transfer(src_conn, temp_path, dst_key)
+            except Exception:
+                if temp_path.exists():
+                    temp_path.unlink()
+                self.use_encryption = old_use_encryption
+                self._cipher_module = old_cipher_module
+                self._cached_key = None
+                src_conn.close()
+                raise
             src_conn.close()
 
-        backup_path = self.db_path.with_suffix(".bak")
-        if backup_path.exists():
-            backup_path.unlink()
-        self.db_path.rename(backup_path)
-        temp_path.rename(self.db_path)
-        backup_path.unlink()
+            if backup_path.exists():
+                backup_path.unlink()
+            os.replace(self.db_path, backup_path)
+            os.replace(temp_path, self.db_path)
+
+            for suffix in ("-wal", "-shm"):
+                stale = self.db_path.with_name(self.db_path.name + suffix)
+                if stale.exists():
+                    stale.unlink()
+
+            self._generation += 1
+
+        if not enable:
+            delete_key(
+                service_name=self.service_name,
+                key_name=self.key_name,
+            )
 
         return True
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from ..auth import get_current_user
 
 router = APIRouter()
 
@@ -23,4 +25,16 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": "0.1.0",
+    }
+
+
+@router.get("/health/secured")
+async def health_secured(
+    _: str = Depends(get_current_user),
+):
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "0.1.0",
+        "authenticated": True,
     }

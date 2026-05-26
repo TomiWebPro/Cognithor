@@ -13,6 +13,7 @@ from secure_db_service.key_manager import (
     _keyring_available,
     get_key,
     set_key,
+    delete_key,
     has_key,
     get_or_create_key,
     resolve_key,
@@ -134,8 +135,31 @@ if available:
 else:
     test("get_or_create_key returns fallback behavior", get_or_create_key() == FALLBACK_KEY)
 
+# --- delete_key ---
+print("\n6. delete_key")
+if available:
+    svc_dk = "CognithorTest_dk_" + str(os.getpid())
+    key_dk = "test_dk_key"
+
+    test("delete_key on non-existent returns True",
+         delete_key(service_name=svc_dk, key_name=key_dk) is True)
+
+    ok = set_key("delete_me", service_name=svc_dk, key_name=key_dk)
+    test("set_key before delete succeeds", ok is True)
+    test("has_key True before delete",
+         has_key(service_name=svc_dk, key_name=key_dk) is True)
+
+    ok = delete_key(service_name=svc_dk, key_name=key_dk)
+    test("delete_key returns True", ok is True)
+    test("has_key False after delete",
+         has_key(service_name=svc_dk, key_name=key_dk) is False)
+    test("get_key returns None after delete",
+         get_key(service_name=svc_dk, key_name=key_dk) is None)
+else:
+    test("delete_key returns False (no keyring)", delete_key() is False)
+
 # --- Edge cases ---
-print("\n6. Edge cases")
+print("\n7. Edge cases")
 test("FALLBACK_KEY is non-empty", len(FALLBACK_KEY) > 0)
 
 existing = get_key(service_name="NonExistentService", key_name="nonexistent_key")

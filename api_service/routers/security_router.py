@@ -25,7 +25,7 @@ async def get_security_settings(
     return {
         "access_token_expire_minutes": config.get("access_token_expire_minutes", "10"),
         "database_encryption_enabled": svc.use_encryption,
-        "database_encryption_available": svc._cipher_module is not None,
+        "database_encryption_available": svc._cipher_available,
         "keyring_available": _keyring_available(),
         "keyring_service_name": svc.service_name,
         "keyring_key_name": svc.key_name,
@@ -62,8 +62,11 @@ async def update_security_settings(
             config_mgr.toggle_encryption(enable)
 
             endpoint_mgr = request.app.state.endpoint_mgr
-            endpoint_mgr.tracker.toggle_encryption(enable)
             endpoint_mgr.log.db.toggle_encryption(enable)
+
+            config_mgr.set_config(
+                "database_encryption_enabled", str(enable).lower(),
+            )
         finally:
             request.app.state.encryption_in_progress = False
 

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -12,18 +12,20 @@ DB_DIR = Path("data")
 DB_NAME = "cognithor_logs.db"
 DB_PATH = DB_DIR / DB_NAME
 
+logger = logging.getLogger(__name__)
+
 
 class LogDatabase:
     def __init__(
         self,
         db_path: Optional[Path] = None,
-        use_encryption: bool = True,
+        use_encryption: bool = False,
         service_name: str = "Cognithor",
-        key_name: str = "log_db_key",
+        key_name: str = "db_key",
         key_env_var: Optional[str] = None,
     ):
-        self.db_path = db_path or DB_PATH
-        self._svc = SecureDbService(
+        self.db_path = Path(db_path) if db_path else DB_PATH
+        self._svc_kwargs = dict(
             db_path=self.db_path,
             use_encryption=use_encryption,
             wal_mode=True,
@@ -33,29 +35,63 @@ class LogDatabase:
             key_name=key_name,
             key_env_var=key_env_var,
         )
+        self._svc = SecureDbService(**self._svc_kwargs)
         self._init_db()
 
-    def _init_db(self) -> None:
-        self._svc.execute_script("""
-            CREATE TABLE IF NOT EXISTS log_entries (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp   TEXT NOT NULL,
-                level       TEXT NOT NULL,
-                folder      TEXT NOT NULL,
-                file        TEXT NOT NULL,
-                line        INTEGER,
-                raw_error   TEXT,
-                message     TEXT,
-                created_at  TEXT DEFAULT (datetime('now'))
-            );
+    def _recover(self) -> None:
+        if self.db_path.exists():
+            logger.warning("Log database corrupted, deleting and recreating: %s", self.db_path)
+            self.db_path.unlink()
+        self._svc = SecureDbService(**self._svc_kwargs)
 
-            CREATE INDEX IF NOT EXISTS idx_log_entries_level
-                ON log_entries(level);
-            CREATE INDEX IF NOT EXISTS idx_log_entries_folder
-                ON log_entries(folder);
-            CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp
-                ON log_entries(timestamp);
-        """)
+    def _init_db(self) -> None:
+        try:
+            self._svc.execute_script("""
+                CREATE TABLE IF NOT EXISTS log_entries (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp   TEXT NOT NULL,
+                    level       TEXT NOT NULL,
+                    folder      TEXT NOT NULL,
+                    file        TEXT NOT NULL,
+                    line        INTEGER,
+                    raw_error   TEXT,
+                    message     TEXT,
+                    created_at  TEXT DEFAULT (datetime('now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_log_entries_level
+                    ON log_entries(level);
+                CREATE INDEX IF NOT EXISTS idx_log_entries_folder
+                    ON log_entries(folder);
+                CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp
+                    ON log_entries(timestamp);
+            """)
+        except Exception as e:
+            err = str(e).lower()
+            if "not a database" in err or "file is not a database" in err:
+                self._recover()
+                self._svc.execute_script("""
+                    CREATE TABLE IF NOT EXISTS log_entries (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp   TEXT NOT NULL,
+                        level       TEXT NOT NULL,
+                        folder      TEXT NOT NULL,
+                        file        TEXT NOT NULL,
+                        line        INTEGER,
+                        raw_error   TEXT,
+                        message     TEXT,
+                        created_at  TEXT DEFAULT (datetime('now'))
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_log_entries_level
+                        ON log_entries(level);
+                    CREATE INDEX IF NOT EXISTS idx_log_entries_folder
+                        ON log_entries(folder);
+                    CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp
+                        ON log_entries(timestamp);
+                """)
+            else:
+                raise
 
     def insert(self, entry: LogEntry) -> int:
         return self._svc.insert(
@@ -125,7 +161,15 @@ class LogDatabase:
         return cur.rowcount
 
     def toggle_encryption(self, enable: bool) -> bool:
-        return self._svc.toggle_encryption(enable)
+        try:
+            return self._svc.toggle_encryption(enable)
+        except Exception as e:
+            err = str(e).lower()
+            if "not a database" in err or "file is not a database" in err:
+                self._recover()
+                self._init_db()
+                return self._svc.toggle_encryption(enable)
+            raise
 
     def vacuum(self) -> None:
         self._svc.vacuum()

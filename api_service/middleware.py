@@ -11,14 +11,18 @@ from .encryption import decrypt_payload, derive_key, encrypt_payload
 
 logger = logging.getLogger(__name__)
 
-EXCLUDED_PREFIXES = [
+EXACT_EXCLUDED = {
     "/",
     "/health",
     "/token",
     "/docs",
+    "/docs/oauth2-redirect",
     "/openapi.json",
-    "/onboarding",
     "/redoc",
+}
+
+EXCLUDED_PREFIXES = [
+    "/onboarding",
 ]
 
 
@@ -38,6 +42,8 @@ class EncryptionMiddleware(BaseHTTPMiddleware):
                     if isinstance(enc, dict) and "iv" in enc and "data" in enc:
                         plaintext = decrypt_payload(enc, key)
                         plain_bytes = plaintext.encode()
+
+                        request._body = plain_bytes
 
                         async def receive():
                             return {
@@ -78,8 +84,10 @@ class EncryptionMiddleware(BaseHTTPMiddleware):
 
 
 def _is_excluded(path: str) -> bool:
+    if path in EXACT_EXCLUDED:
+        return True
     for prefix in EXCLUDED_PREFIXES:
-        if path == prefix or path.startswith(prefix + "/") or path.startswith(prefix + "?"):
+        if path.startswith(prefix + "/") or path.startswith(prefix + "?"):
             return True
     return False
 

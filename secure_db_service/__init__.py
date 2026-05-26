@@ -4,11 +4,12 @@ from .key_manager import (
     FALLBACK_KEY,
     get_key,
     set_key,
+    delete_key,
     has_key,
     get_or_create_key,
     resolve_key,
 )
-from .service import SecureDbService
+from .service import DegradedError, SecureDbService
 
 __all__ = [
     "SERVICE_NAME",
@@ -16,8 +17,10 @@ __all__ = [
     "FALLBACK_KEY",
     "get_key",
     "set_key",
+    "delete_key",
     "has_key",
     "get_or_create_key",
     "resolve_key",
+    "DegradedError",
     "SecureDbService",
 ]

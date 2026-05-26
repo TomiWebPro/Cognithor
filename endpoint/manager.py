@@ -9,6 +9,8 @@ from log_service import LogService
 from secure_db_service import SecureDbService
 
 from .config import EndpointSettings
+from log_service.database import LogDatabase
+
 from .database import Tracker
 from .models import EndpointStatus, Message, ProviderRecord
 from .providers import HttpProvider, UsageInfo
@@ -23,8 +25,17 @@ class EndpointManager:
         svc: Optional[SecureDbService] = None,
     ):
         self.tracker = tracker or Tracker(svc=svc)
-        self.settings = settings or EndpointSettings(tracker=self.tracker)
-        self.log = log_service or LogService()
+        if log_service is not None:
+            self.log = log_service
+        elif svc is not None:
+            self.log = LogService(
+                database=LogDatabase(use_encryption=svc.use_encryption),
+            )
+        else:
+            self.log = LogService()
+        self.settings = settings or EndpointSettings(
+            tracker=self.tracker, log_service=self.log,
+        )
         self._instances: dict[str, HttpProvider] = {}
 
     def _get_provider_instance(self, name: str) -> HttpProvider:
@@ -212,3 +223,19 @@ class EndpointManager:
             f"Provider registered: {record.name}",
             folder="endpoint", file=__file__,
         )
+
+    def delete_provider(self, name: str) -> bool:
+        try:
+            self.tracker._svc.execute("DELETE FROM providers WHERE name = ?", (name,))
+            self._instances.pop(name, None)
+            self.log.notify(
+                f"Provider deleted: {name}",
+                folder="endpoint", file=__file__,
+            )
+            return True
+        except Exception as exc:
+            self.log.error(
+                f"Failed to delete provider {name}: {exc}",
+                folder="endpoint", file=__file__,
+            )
+            return False
