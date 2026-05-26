@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .key_manager import FALLBACK_KEY, delete_key, get_or_create_key, resolve_key
+from .key_manager import FALLBACK_KEY, get_or_create_key, resolve_key
 
 
 def _sql_escape(val: str) -> str:
@@ -287,10 +287,6 @@ class SecureDbService:
 
             generated_key: str | None = None
             if enable:
-                delete_key(
-                    service_name=self.service_name,
-                    key_name=self.key_name,
-                )
                 generated_key = get_or_create_key(
                     service_name=self.service_name,
                     key_name=self.key_name,
@@ -337,13 +333,8 @@ class SecureDbService:
                 if stale.exists():
                     stale.unlink()
 
+            backup_path.unlink(missing_ok=True)
             self._generation += 1
-
-        if not enable:
-            delete_key(
-                service_name=self.service_name,
-                key_name=self.key_name,
-            )
 
         return True
 

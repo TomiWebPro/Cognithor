@@ -8,7 +8,7 @@ from secure_db_service import SecureDbService
 from .models import LogEntry, LogLevel
 
 
-DB_DIR = Path("data")
+DB_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_NAME = "cognithor_logs.db"
 DB_PATH = DB_DIR / DB_NAME
 

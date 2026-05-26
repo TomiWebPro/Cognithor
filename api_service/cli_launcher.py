@@ -9,6 +9,8 @@ from api_service.database import ApiConfigManager
 from endpoint.database import Tracker
 from log_service import LogDatabase, LogService
 from pathlib import Path
+from secure_db_service.decrypt import decrypt_databases
+from secure_db_service.encrypt import encrypt_databases
 
 PYSQLCIPHER_AVAILABLE = False
 try:
@@ -667,6 +669,56 @@ def detect_db_encryption() -> bool:
         sys.exit(0)
 
 
+def cmd_encrypt():
+    if not PYSQLCIPHER_AVAILABLE:
+        print("\n  pysqlcipher3 is not installed. Cannot encrypt.")
+        return
+    if CONFIG["use_encryption"]:
+        print("\n  Databases are already encrypted.")
+        return
+
+    print("\n--- Encrypt Database ---\n")
+    print("  This will encrypt both databases with a new key.")
+    print("  The key will be stored in your system keyring.\n")
+
+    if not _confirm("Proceed?", False):
+        print("  Cancelled.")
+        return
+
+    print("  Encrypting...", end=" ")
+    try:
+        encrypt_databases(CONFIG["config_mgr"], CONFIG["tracker"])
+        CONFIG["use_encryption"] = True
+        print("OK")
+        print("\n  Databases are now ENCRYPTED.")
+        print("  Restart the server (without -i) for the change to take effect.\n")
+    except Exception as e:
+        print(f"FAILED: {e}")
+
+
+def cmd_decrypt():
+    if not CONFIG["use_encryption"]:
+        print("\n  Databases are already plain-text.")
+        return
+
+    print("\n--- Decrypt Database ---\n")
+    print("  This will decrypt both databases to plain-text SQLite.\n")
+
+    if not _confirm("Proceed?", False):
+        print("  Cancelled.")
+        return
+
+    print("  Decrypting...", end=" ")
+    try:
+        decrypt_databases(CONFIG["config_mgr"], CONFIG["tracker"])
+        CONFIG["use_encryption"] = False
+        print("OK")
+        print("\n  Databases are now plain-text.")
+        print("  Restart the server (without -i) for the change to take effect.\n")
+    except Exception as e:
+        print(f"FAILED: {e}")
+
+
 def interactive_main():
     header = """
 ============================================================
@@ -689,13 +741,16 @@ def interactive_main():
         sys.exit(1)
 
     while True:
+        enc_label = "ENCRYPTED" if CONFIG["use_encryption"] else "plain-text"
         print("\n--- Main Menu ---\n")
         choice = _choice([
             "Show system status",
             "Provider management",
             "Show connection info (copy for frontend)",
-            "Quit",
-        ], 3)
+            "Encrypt database",
+            "Decrypt database",
+            f"Quit (databases: {enc_label})",
+        ], 5)
 
         if choice == 0:
             cmd_status()
@@ -704,6 +759,10 @@ def interactive_main():
         elif choice == 2:
             cmd_connection_info()
         elif choice == 3:
+            cmd_encrypt()
+        elif choice == 4:
+            cmd_decrypt()
+        elif choice == 5:
             print("\n  Bye.\n")
             break
 

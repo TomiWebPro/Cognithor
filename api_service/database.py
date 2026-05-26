@@ -8,7 +8,7 @@ import bcrypt
 from secure_db_service import SecureDbService
 
 
-DB_DIR = Path("data")
+DB_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_NAME = "cognithor.db"
 DB_PATH = DB_DIR / DB_NAME
 
@@ -38,7 +38,7 @@ class ApiConfigManager:
         db_path: Optional[Path] = None,
         use_encryption: bool = False,
         service_name: str = "Cognithor",
-        key_name: str = "api_config_key",
+        key_name: str = "db_key",
         key_env_var: Optional[str] = None,
     ):
         self.db_path = db_path or DB_PATH

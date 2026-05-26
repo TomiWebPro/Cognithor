@@ -1,3 +1,5 @@
+from .decrypt import decrypt_databases
+from .encrypt import encrypt_databases
 from .key_manager import (
     SERVICE_NAME,
     KEY_NAME,
@@ -23,4 +25,6 @@ __all__ = [
     "resolve_key",
     "DegradedError",
     "SecureDbService",
+    "encrypt_databases",
+    "decrypt_databases",
 ]

@@ -66,7 +66,7 @@ def cmd_init(use_encryption: bool, verbose: bool) -> None:
 
     from api_service.database import ApiConfigManager
 
-    config_mgr = ApiConfigManager(use_encryption=use_encryption)
+    config_mgr = ApiConfigManager(use_encryption=use_encryption, key_name="db_key")
     if not config_mgr.user_exists(DEFAULT_ADMIN_USER):
         config_mgr.create_user(DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASS)
         if verbose:
