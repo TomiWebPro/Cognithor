@@ -50,6 +50,7 @@ DB_PATH = DATA_DIR / "cognithor.db"
 CONFIG: dict = {
     "config_mgr": None,
     "tracker": None,
+    "agent_mgr": None,
     "use_encryption": False,
 }
 
@@ -63,6 +64,7 @@ def _init_services(use_encryption: bool = False) -> None:
     from log_service import LogDatabase, LogService
     from endpoint.database import Tracker
     from api_service.database import ApiConfigManager
+    from agents_service.database import AgentManager
     from secure_db_service import SecureDbService
 
     log_db = LogDatabase(
@@ -92,6 +94,8 @@ def _init_services(use_encryption: bool = False) -> None:
         svc=svc,
         key_name="db_key",
     )
+
+    CONFIG["agent_mgr"] = AgentManager(svc=svc)
 
 
 def db_exists() -> bool:
@@ -308,6 +312,16 @@ def cmd_init() -> None:
             error       TEXT,
             checked_at  TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS agents (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id          TEXT NOT NULL UNIQUE,
+            name              TEXT NOT NULL,
+            context_window    INTEGER DEFAULT 4096,
+            model_ref         TEXT,
+            backup_model_ref  TEXT,
+            created_at        TEXT DEFAULT (datetime('now')),
+            updated_at        TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     for key, default_value in DEFAULT_CONFIG.items():
@@ -373,6 +387,7 @@ def cmd_init() -> None:
 
     from api_service.database import ApiConfigManager
     from endpoint.database import Tracker
+    from agents_service.database import AgentManager
     CONFIG["use_encryption"] = use_enc
     CONFIG["tracker"] = Tracker(
         db_path=DB_PATH, use_encryption=use_enc, log_service=log_svc, svc=svc,
@@ -380,6 +395,7 @@ def cmd_init() -> None:
     CONFIG["config_mgr"] = ApiConfigManager(
         db_path=DB_PATH, svc=svc, key_name="db_key",
     )
+    CONFIG["agent_mgr"] = AgentManager(svc=svc)
 
     print_empty()
     print_step(3, 3, "Initialization complete")
@@ -572,6 +588,145 @@ def cmd_providers_menu() -> None:
             else:
                 print_warning("Cancelled")
             pause()
+
+
+def cmd_agents_menu() -> None:
+    agent_mgr = CONFIG["agent_mgr"]
+    tracker = CONFIG["tracker"]
+    from agents_service import build_model_ref, parse_model_ref
+
+    def _pick_model_ref(prompt_title: str = "Select model") -> Optional[str]:
+        providers = tracker.list_providers()
+        if not providers:
+            print_warning("No providers configured")
+            pause()
+            return None
+        pnames = [p.name for p in providers]
+        pidx = choose(pnames, title=f"{prompt_title} — Provider")
+        provider = providers[pidx]
+        if not provider.models:
+            print_warning(f"No models for {provider.name}")
+            pause()
+            return None
+        mlist = list(provider.models.keys())
+        midx = choose(mlist, title=f"{prompt_title} — Model for {provider.name}")
+        return build_model_ref(provider.name, mlist[midx])
+
+    while True:
+        print_header("Agent Management", "Main > Agents")
+
+        agents = agent_mgr.list_agents()
+        if agents:
+            rows = []
+            for a in agents:
+                primary = a.model_ref or "-"
+                backup = a.backup_model_ref or "-"
+                rows.append([a.agent_id, a.name, str(a.context_window), primary, backup])
+            print_table(
+                ["ID", "Name", "Context Window", "Model Ref", "Backup Ref"],
+                rows,
+            )
+        else:
+            print_warning("No agents configured")
+
+        print_empty()
+        choice = choose(
+            [
+                "Add agent",
+                "Edit context window",
+                "Link primary model",
+                "Link backup model",
+                "Delete agent",
+                "Back to main menu",
+            ],
+            title="Select an action",
+            default=5,
+            hint="Manage autonomous agents",
+        )
+
+        if choice == 5:
+            return
+
+        if choice == 0:
+            name = ask("Agent name", hint="A friendly name for this agent")
+            if not name:
+                print_warning("Cancelled")
+                continue
+            cw_input = ask("Context window", default="4096", hint="Max tokens for context")
+            try:
+                cw = int(cw_input)
+            except ValueError:
+                print_error("Invalid number, using 4096")
+                cw = 4096
+            agent = agent_mgr.create_agent(name=name, context_window=cw)
+            print_success(f"Created agent {agent.agent_id} ({name})")
+
+        elif choice == 1:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
+            alist = [f"{a.agent_id} — {a.name} (cw={a.context_window})" for a in agents]
+            aidx = choose(alist, title="Select agent to edit context window")
+            agent = agents[aidx]
+            cw_input = ask(
+                "Context window",
+                default=str(agent.context_window),
+                hint="Max tokens for this agent's context",
+            )
+            try:
+                cw = int(cw_input)
+            except ValueError:
+                print_error("Invalid number")
+                continue
+            agent_mgr.update_agent(agent.agent_id, context_window=cw)
+            print_success(f"Updated {agent.agent_id} context window → {cw}")
+
+        elif choice == 2:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
+            alist = [f"{a.agent_id} — {a.name}" for a in agents]
+            aidx = choose(alist, title="Select agent to link primary model")
+            agent = agents[aidx]
+            ref = _pick_model_ref("Primary model")
+            if ref is None:
+                continue
+            agent_mgr.update_agent(agent.agent_id, model_ref=ref)
+            print_success(f"Linked {agent.agent_id} primary → {ref}")
+
+        elif choice == 3:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
+            alist = [f"{a.agent_id} — {a.name}" for a in agents]
+            aidx = choose(alist, title="Select agent to link backup model")
+            agent = agents[aidx]
+            ref = _pick_model_ref("Backup model")
+            if ref is None:
+                continue
+            agent_mgr.update_agent(agent.agent_id, backup_model_ref=ref)
+            print_success(f"Linked {agent.agent_id} backup → {ref}")
+
+        elif choice == 4:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
+            alist = [f"{a.agent_id} — {a.name}" for a in agents]
+            aidx = choose(alist, title="Select agent to DELETE")
+            agent = agents[aidx]
+            if confirm(f"DELETE agent '{agent.name}' ({agent.agent_id}) permanently?", default=False):
+                agent_mgr.delete_agent(agent.agent_id)
+                print_success(f"Deleted agent: {agent.agent_id}")
+            else:
+                print_warning("Cancelled")
 
 
 def cmd_models_menu(tracker, provider) -> None:
@@ -1108,8 +1263,10 @@ def interactive_main() -> None:
 
             config_mgr = CONFIG.get("config_mgr")
             tracker = CONFIG.get("tracker")
+            agent_mgr = CONFIG.get("agent_mgr")
             status_api = "N/A"
             status_providers = "0"
+            status_agents = "0"
             status_active = "none"
             if config_mgr and tracker:
                 try:
@@ -1117,6 +1274,8 @@ def interactive_main() -> None:
                     status_api = f"{cfg.get('api_host', '0.0.0.0')}:{cfg.get('api_port', '4464')}"
                     providers = tracker.list_providers()
                     status_providers = str(len(providers))
+                    if agent_mgr:
+                        status_agents = str(len(agent_mgr.list_agents()))
                     act = [p.name for p in providers if any(p.active_models.values()) or p.is_active]
                     status_active = act[0] if act else "none"
                 except Exception:
@@ -1129,6 +1288,7 @@ def interactive_main() -> None:
                 (f"  {'API:':<13}", "bold"), (f"{status_api}\n", "cyan"),
                 (f"  {'Providers:':<13}", "bold"), (f"{status_providers}", "cyan"),
                 ("  active: ", "dim"), (f"{status_active}\n", "cyan"),
+                (f"  {'Agents:':<13}", "bold"), (f"{status_agents}\n", "cyan"),
             )
 
             console.print(Panel(
@@ -1143,22 +1303,25 @@ def interactive_main() -> None:
             choice = choose(
                 [
                     "Provider Management",
+                    "Agent Management",
                     "Database Management",
                     "Connection Info",
                     "Quit",
                 ],
                 title="Select an option",
-                default=3,
+                default=4,
                 hint="Manage Cognithor backend configuration",
             )
 
             if choice == 0:
                 cmd_providers_menu()
             elif choice == 1:
-                cmd_database_menu()
+                cmd_agents_menu()
             elif choice == 2:
-                cmd_connection_info()
+                cmd_database_menu()
             elif choice == 3:
+                cmd_connection_info()
+            elif choice == 4:
                 print_empty()
                 console.print(
                     Panel(

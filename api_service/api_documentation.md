@@ -205,6 +205,42 @@ All provider endpoints require authentication and use encrypted payloads.
 | `POST` | `/providers/{name}/test` | Test provider connectivity (or specific model if `model` in body) |
 | `POST` | `/providers/{name}/test-model/{model}` | Test a specific model by name |
 
+### Agents
+
+All agent endpoints require authentication and use encrypted payloads. Each agent is identified by a unique 6-character alphanumeric ID (`agent_id`). Models are linked via `model_ref` in the format `provider::model_name` (e.g. `openai::gpt-4o`).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/agents` | List all agents |
+| `GET` | `/agents/{agent_id}` | Get agent by 6-char ID |
+| `POST` | `/agents` | Create agent |
+| `PUT` | `/agents/{agent_id}` | Update agent (context window, model refs, name) |
+| `DELETE` | `/agents/{agent_id}` | Delete agent |
+
+**Create agent:**
+```json
+{
+  "name": "MyAgent",
+  "context_window": 8192,
+  "model_ref": "openai::gpt-4o",
+  "backup_model_ref": "anthropic::claude-sonnet-4-20250514"
+}
+```
+
+**Response:**
+```json
+{
+  "id": 1,
+  "agent_id": "aB3xK9",
+  "name": "MyAgent",
+  "context_window": 8192,
+  "model_ref": "openai::gpt-4o",
+  "backup_model_ref": "anthropic::claude-sonnet-4-20250514",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
 ### Settings
 
 All settings endpoints require authentication and use encrypted payloads.

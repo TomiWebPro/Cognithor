@@ -26,10 +26,12 @@ except ImportError:
 def create_app(use_encryption: bool = False):
     from contextlib import asynccontextmanager
     from fastapi import FastAPI
+    from agents_service import AgentManager
     from endpoint import EndpointManager
     from api_service.database import ApiConfigManager
     from api_service.middleware import EncryptionMiddleware
     from api_service.routers import (
+        agents_router,
         auth_router,
         base,
         onboarding_router,
@@ -43,6 +45,7 @@ def create_app(use_encryption: bool = False):
         config_mgr = ApiConfigManager(use_encryption=use_encryption, key_name="db_key")
         app.state.config_mgr = config_mgr
         app.state.endpoint_mgr = EndpointManager(svc=config_mgr._svc)
+        app.state.agent_mgr = AgentManager(svc=config_mgr._svc)
         app.state.encryption_in_progress = False
 
         degraded = []
@@ -69,6 +72,7 @@ def create_app(use_encryption: bool = False):
     app.include_router(security_router.router)
     app.include_router(settings_router.router)
     app.include_router(providers_router.router)
+    app.include_router(agents_router.router)
 
     app.add_middleware(EncryptionMiddleware)
 

@@ -13,6 +13,7 @@ from cli_service.interactive import (
     cmd_status,
     cmd_database_menu,
     cmd_connection_info,
+    cmd_agents_menu,
     detect_db_encryption as interactive_detect_db_encryption,
     db_exists,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "cmd_status",
     "cmd_database_menu",
     "cmd_connection_info",
+    "cmd_agents_menu",
     "interactive_detect_db_encryption",
     "db_exists",
 ]
