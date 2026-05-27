@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Cognithor onboarding — initialise all three services.
 
-Usage:
-    python onboarding/setup.py init          # create DBs, tables, seed data
-    python onboarding/setup.py init --no-encrypt
-    python onboarding/setup.py clear         # remove all DB files
-    python onboarding/setup.py reset         # clear + init
-    python onboarding/setup.py reset --no-encrypt
-    python onboarding/setup.py status        # show what exists
+Usage (standalone):
+    python -m cli_service.onboarding init          # create DBs, tables, seed data
+    python -m cli_service.onboarding init --no-encrypt
+    python -m cli_service.onboarding clear         # remove all DB files
+    python -m cli_service.onboarding reset         # clear + init
+    python -m cli_service.onboarding reset --no-encrypt
+    python -m cli_service.onboarding status        # show what exists
+
+Importable:
+    from cli_service.onboarding import cmd_init, cmd_clear, cmd_status
 """
 
 from __future__ import annotations
@@ -119,7 +122,7 @@ def cmd_status() -> None:
     print()
 
     if not any(f.exists() for f in DB_FILES):
-        print("No databases found — run `python onboarding/setup.py init` to create them.")
+        print("No databases found — run `python -m cli_service.onboarding init` to create them.")
         return
 
     sys.path.insert(0, str(PROJECT_ROOT))

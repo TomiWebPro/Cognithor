@@ -149,13 +149,13 @@ def detect_db_encryption() -> bool:
                 print_info("Try: sudo apt install libsqlcipher-dev && pip install pysqlcipher3")
             sys.exit(1)
         elif choice == 1:
-            from onboarding import setup
-            setup.cmd_clear(force=True)
+            from cli_service.onboarding import cmd_clear
+            cmd_clear(force=True)
             print_success("Cleared. Re-initializing with encryption...")
             return True
         elif choice == 2:
-            from onboarding import setup
-            setup.cmd_clear(force=True)
+            from cli_service.onboarding import cmd_clear
+            cmd_clear(force=True)
             print_success("Cleared. Re-initializing plain-text...")
             return False
         else:
@@ -191,13 +191,13 @@ def detect_db_encryption() -> bool:
         default=2,
     )
     if choice == 0:
-        from onboarding import setup
-        setup.cmd_clear(force=True)
+        from cli_service.onboarding import cmd_clear
+        cmd_clear(force=True)
         print_success("Cleared. Re-initializing with encryption...")
         return True
     elif choice == 1:
-        from onboarding import setup
-        setup.cmd_clear(force=True)
+        from cli_service.onboarding import cmd_clear
+        cmd_clear(force=True)
         print_success("Cleared. Re-initializing plain-text...")
         return False
     else:
@@ -371,6 +371,7 @@ def cmd_init() -> None:
         )
     print_success("Default providers seeded")
 
+    from api_service.database import ApiConfigManager
     from endpoint.database import Tracker
     CONFIG["use_encryption"] = use_enc
     CONFIG["tracker"] = Tracker(

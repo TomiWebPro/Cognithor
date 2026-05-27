@@ -42,9 +42,6 @@ async def create_provider(
     name = payload.get("name")
     if not name:
         raise HTTPException(status_code=422, detail="Field 'name' is required")
-    existing = endpoint_mgr.tracker.get_provider(name)
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="Provider already exists")
     record = ProviderRecord(
         name=name,
         api_key=payload.get("api_key"),
