@@ -1226,7 +1226,7 @@ def cmd_database_menu() -> None:
             _do_encrypt()
 
 
-def interactive_main() -> None:
+def interactive_main() -> bool:
     print_banner(subtitle="Backend Management CLI")
     console.print(
         Text("Manage providers, models, encryption, and connection info", style="dim"),
@@ -1306,10 +1306,11 @@ def interactive_main() -> None:
                     "Agent Management",
                     "Database Management",
                     "Connection Info",
+                    "Start server",
                     "Quit",
                 ],
                 title="Select an option",
-                default=4,
+                default=5,
                 hint="Manage Cognithor backend configuration",
             )
 
@@ -1322,6 +1323,8 @@ def interactive_main() -> None:
             elif choice == 3:
                 cmd_connection_info()
             elif choice == 4:
+                return True
+            elif choice == 5:
                 print_empty()
                 console.print(
                     Panel(
@@ -1331,7 +1334,7 @@ def interactive_main() -> None:
                         padding=(1, 4),
                     )
                 )
-                break
+                return False
     except KeyboardInterrupt:
         print_empty()
         console.print(
@@ -1342,3 +1345,4 @@ def interactive_main() -> None:
                 padding=(1, 4),
             )
         )
+        return False

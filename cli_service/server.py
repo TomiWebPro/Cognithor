@@ -181,7 +181,30 @@ def main() -> None:
 
     if args.interactive:
         from cli_service.interactive import interactive_main
-        interactive_main()
+        start_server = interactive_main()
+        if not start_server:
+            return
+
+    if args.interactive and start_server:
+        use_encryption = detect_db_encryption()
+        from api_service.main import create_app
+        app = create_app(use_encryption=use_encryption)
+        from api_service.database import ApiConfigManager
+        config_mgr = ApiConfigManager(use_encryption=use_encryption, key_name="db_key")
+        config = config_mgr.get_all_config()
+        host = config.get("api_host", "0.0.0.0")
+        port = int(config.get("api_port", "4464"))
+        print_empty()
+        print_status_panel([
+            ("Status", "Starting server"),
+            ("Host", host),
+            ("Port", str(port)),
+            ("Database", str(DB_PATH)),
+            ("Encryption", "ENCRYPTED" if use_encryption else "plain-text"),
+        ])
+        print_empty()
+        import uvicorn
+        uvicorn.run(app, host=host, port=port)
         return
 
     if args.encrypt and args.no_encrypt:
