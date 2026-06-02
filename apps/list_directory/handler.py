@@ -76,40 +76,41 @@ def generate_list_directory_interface(
     result: Optional[dict] = None,
 ) -> str:
     label = f" ({tab_label})" if tab_label else ""
-    lines = [f"--- List Directory{label} ----------------------"]
-    lines.append("  Status: Open")
-    lines.append("")
+    lines = [
+        f"[list_directory]{label}",
+        "  Status: Open",
+        "",
+    ]
 
     if result is None:
         path = params.get("path", "")
         result = execute_list_directory(path) if path else None
 
     if result and result.get("success"):
-        lines.append(f"Path: {result['path']}")
-        lines.append(f"Entries: {result['entry_count']} ({result['dir_count']} dirs, {result['file_count']} files)")
-        lines.append(f"Total size: {result['total_size_formatted']}")
+        lines.append(f"  Path: {result['path']}")
+        lines.append(f"  Entries: {result['entry_count']} ({result['dir_count']} dirs, {result['file_count']} files)")
+        lines.append(f"  Total size: {result['total_size_formatted']}")
         lines.append("")
 
         for entry in result["entries"][:50]:
-            icon = "+" if entry["type"] == "dir" else " " if entry["type"] == "file" else "?"
+            ic = "+" if entry["type"] == "dir" else " " if entry["type"] == "file" else "?"
             name = entry["name"]
             size_str = entry["size_formatted"]
-            lines.append(f"  [{icon}] {name:<30} {size_str:>10}")
+            lines.append(f"  [{ic}] {name:<30} {size_str:>10}")
 
         if result["entry_count"] > 50:
             lines.append(f"  ... and {result['entry_count'] - 50} more entries")
     elif result:
-        lines.append(f"Error: {result.get('error', 'Unknown error')}")
+        lines.append(f"  Error: {result.get('error', 'Unknown error')}")
     else:
         lines.append("  No directory loaded yet.")
         lines.append("")
 
     lines.append("")
-    lines.append("  Available commands:")
-    lines.append("    list path=<directory_path>")
-    lines.append("      List contents of the given directory.")
+    lines.append("  Commands:")
+    lines.append('    {"command": "list", "path": "<dir>"}')
+    lines.append("      List contents of a directory.")
 
-    lines.append("-------------------------------------------------")
     return "\n".join(lines)
 
 

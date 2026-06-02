@@ -106,23 +106,24 @@ class AppTabManager:
         if handler is not None:
             interface = handler.generate_interface(params, tab_label=tab_label)
         elif app_record is not None:
-            icon = app_record.icon or "◆"
+            icon = app_record.icon or "\u25c6"
             label = f" ({tab_label})" if tab_label else ""
             lines = [
-                f"--- {icon} {app_record.name}{label} ----------------------",
+                f"[{app_record.app_id}]{label}",
                 "  Status: Open",
             ]
             if app_record.description:
                 lines.append("")
                 lines.append(f"  {app_record.description}")
-            lines.append("")
-            lines.append("  Available parameters:")
-            lines.append("    (none defined)")
-            lines.append("-------------------------------------------------")
             interface = "\n".join(lines)
 
         if tab_id and not is_persistent:
-            interface += f"\n  To close: close_app(tab_id=\"{tab_id}\")\n"
+            close_tag = f'{{close_tab:"{tab_id}"}}'
+            idx = interface.find('\n')
+            if idx == -1:
+                interface = f"{interface} {close_tag}"
+            else:
+                interface = f"{interface[:idx]} {close_tag}{interface[idx:]}"
 
         return interface
 
@@ -167,7 +168,7 @@ class AppTabManager:
 
         return tab_id, interface
 
-    def close_app(self, tab_id: str) -> bool:
+    def close_tab(self, tab_id: str) -> bool:
         existing = self._svc.query_one(
             "SELECT id, is_persistent FROM agent_open_apps WHERE id = ?", (tab_id,)
         )
@@ -178,14 +179,14 @@ class AppTabManager:
         self._svc.execute("DELETE FROM agent_open_apps WHERE id = ?", (tab_id,))
         return True
 
-    def close_apps_by_app(self, agent_id: str, app_id: str) -> int:
+    def close_tabs_by_app(self, agent_id: str, app_id: str) -> int:
         self._svc.execute(
             "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ? AND is_persistent = 0",
             (agent_id, app_id),
         )
         return self._svc.changes if hasattr(self._svc, 'changes') else 0
 
-    def close_all_apps(self, agent_id: str) -> int:
+    def close_all_tabs(self, agent_id: str) -> int:
         self._svc.execute(
             "DELETE FROM agent_open_apps WHERE agent_id = ? AND is_persistent = 0",
             (agent_id,),
@@ -261,15 +262,18 @@ class AppTabManager:
         if not records:
             return ""
 
-        sections = ["--- Open Apps ------------------------------", ""]
-        for rec in records:
+        sections: list[str] = []
+        for i, rec in enumerate(records, start=1):
             if rec.interface_text:
-                if rec.is_persistent:
-                    sections.append(rec.interface_text)
+                if sections:
                     sections.append("")
+                text = rec.interface_text
+                idx = text.find('\n')
+                if idx == -1:
+                    text = f"[tab {i}] {text}"
                 else:
-                    sections.append(rec.interface_text)
-                    sections.append("")
+                    text = f"[tab {i}] {text[:idx]}{text[idx:]}"
+                sections.append(text)
 
         return "\n".join(sections)
 

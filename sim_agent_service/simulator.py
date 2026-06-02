@@ -9,11 +9,15 @@ Usage: python main.py -s
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
 from typing import Optional
 
+from rich.panel import Panel
+from rich.text import Text
+from rich import box as rich_box
 from cli_service.display import console, print_banner, print_error, print_warning, print_hint
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -97,8 +101,8 @@ def _init_services(use_encryption: bool = False) -> dict:
     }
 
 
-def _oj(data: dict) -> str:
-    return json.dumps(data)
+def _oj(data: dict, indent: Optional[int] = None) -> str:
+    return json.dumps(data, indent=indent)
 
 
 def _context(agent_id: str, app_tab_mgr) -> str:
@@ -136,7 +140,7 @@ def _handle_close(args: dict, services: dict, agent_id: str) -> Optional[dict]:
 
     app_tab_mgr = services["app_tab_mgr"]
     try:
-        if app_tab_mgr.close_app(tab_id):
+        if app_tab_mgr.close_tab(tab_id):
             return {"tab_id": tab_id, "status": "closed"}
         return {"error": f"Tab '{tab_id}' not found"}
     except ValueError as e:
@@ -166,6 +170,38 @@ def _handle_input(
     }
 
 
+_SHORTCUTS = {
+    "open_app": ("open", "app_id"),
+    "close_tab": ("close", "tab_id"),
+    "list_apps": ("apps", None),
+    "list_tabs": ("tabs", None),
+    "context": ("context", None),
+    "help": ("help", None),
+    "quit": ("quit", None),
+    "exit": ("quit", None),
+}
+
+
+def _normalize(item: dict) -> dict:
+    for key, (cmd, prop) in _SHORTCUTS.items():
+        if key in item:
+            normalized = {"command": cmd}
+            val = item[key]
+            if isinstance(val, dict):
+                normalized.update(val)
+            if prop and val and not isinstance(val, dict):
+                normalized[prop] = val
+            for k, v in item.items():
+                if k != key:
+                    normalized[k] = v
+            return normalized
+    return item
+
+
+def _fix_json_keys(raw: str) -> str:
+    return re.sub(r'(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', raw)
+
+
 def _dispatch(raw: str, services: dict, agent_id: str) -> list[dict]:
     results = []
     raw = raw.strip()
@@ -173,8 +209,10 @@ def _dispatch(raw: str, services: dict, agent_id: str) -> list[dict]:
     if not raw:
         return results
 
+    clean = raw.replace('\\"', '"')
+    clean = _fix_json_keys(clean)
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(clean)
     except json.JSONDecodeError:
         parsed = {"input": raw}
 
@@ -184,6 +222,8 @@ def _dispatch(raw: str, services: dict, agent_id: str) -> list[dict]:
         if not isinstance(item, dict):
             results.append({"error": "Each item must be a JSON object", "raw": str(item)})
             continue
+
+        item = _normalize(item)
 
         command = item.get("command", "").lower().lstrip("/")
         if not command:
@@ -299,7 +339,15 @@ def simulation_main() -> None:
         "agent": {"name": agent.name, "agent_id": agent.agent_id, "context_window": agent.context_window},
         "context": ctx,
     }
-    print(_oj(session))
+    session_json = _oj(session, indent=2).replace("\\n", "\n").replace('\\"', '"')
+    panel = Panel(
+        Text(session_json),
+        title="[bold cyan]Context Window[/bold cyan]",
+        box=rich_box.ROUNDED,
+        border_style="cyan",
+        padding=(1, 2),
+    )
+    console.print(panel)
 
     while True:
         try:
@@ -316,4 +364,12 @@ def simulation_main() -> None:
         for r in results:
             if r.get("type") == "quit":
                 return
-            print(_oj(r))
+            text = _oj(r, indent=2).replace("\\n", "\n").replace('\\"', '"')
+            panel = Panel(
+                Text(text),
+                title="[bold cyan]Response[/bold cyan]",
+                box=rich_box.ROUNDED,
+                border_style="cyan",
+                padding=(1, 2),
+            )
+            console.print(panel)

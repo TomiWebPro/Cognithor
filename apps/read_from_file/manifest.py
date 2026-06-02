@@ -6,4 +6,26 @@ MANIFEST = {
     "version": "1.0.0",
     "author": "system",
     "icon": "📄",
+    "parameters": [
+        {
+            "name": "filePath",
+            "type": "string",
+            "description": "Path to the file to read",
+            "required": True,
+        },
+    ],
+    "outputs": [
+        {
+            "name": "content",
+            "type": "string",
+            "description": "File content as text",
+            "required": True,
+        },
+        {
+            "name": "size",
+            "type": "integer",
+            "description": "File size in bytes",
+            "required": True,
+        },
+    ],
 }

@@ -44,6 +44,21 @@ def _manifest_from_module(module) -> AppManifest:
     return raw
 
 
+def _manifest_to_json(manifest: AppManifest) -> str:
+    return json.dumps({
+        "app_id": manifest.app_id,
+        "name": manifest.name,
+        "description": manifest.description,
+        "version": manifest.version,
+        "author": manifest.author,
+        "icon": manifest.icon,
+        "parameters": [vars(p) for p in manifest.parameters],
+        "outputs": [vars(o) for o in manifest.outputs],
+        "requires_confirmation": manifest.requires_confirmation,
+        "timeout_seconds": manifest.timeout_seconds,
+    })
+
+
 class AppRegistry:
     def __init__(self, svc: SecureDbService):
         self._svc = svc
@@ -85,18 +100,7 @@ class AppRegistry:
             raise ValueError(f"Invalid icon '{manifest.icon}': must be 1-2 unicode code points")
         app_id = manifest.app_id or self._ensure_unique_app_id()
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        manifest_json = json.dumps({
-            "app_id": manifest.app_id,
-            "name": manifest.name,
-            "description": manifest.description,
-            "version": manifest.version,
-            "author": manifest.author,
-            "icon": manifest.icon,
-            "parameters": [vars(p) for p in manifest.parameters],
-            "outputs": [vars(o) for o in manifest.outputs],
-            "requires_confirmation": manifest.requires_confirmation,
-            "timeout_seconds": manifest.timeout_seconds,
-        })
+        manifest_json = _manifest_to_json(manifest)
         self._svc.execute(
             """INSERT INTO apps
                 (app_id, name, description, version, author, type, icon,
@@ -210,7 +214,7 @@ class AppRegistry:
                         version=manifest.version,
                         icon=manifest.icon,
                         is_available=True,
-                        manifest=json.dumps(vars(manifest)),
+                        manifest=_manifest_to_json(manifest),
                         requires_confirmation=manifest.requires_confirmation,
                         timeout_seconds=manifest.timeout_seconds,
                     )
