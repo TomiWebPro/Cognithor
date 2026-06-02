@@ -27,17 +27,22 @@ def create_app(use_encryption: bool = False):
     from contextlib import asynccontextmanager
     from fastapi import FastAPI
     from agents_service import AgentManager
+    from apps_service import AppRegistry, AgentAppManager
+    from core import AppTabManager, ListAppsHandler, TimeService
+    from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
     from api_service.database import ApiConfigManager
     from api_service.middleware import EncryptionMiddleware
     from api_service.routers import (
         agents_router,
+        apps_router,
         auth_router,
         base,
         onboarding_router,
         providers_router,
         security_router,
         settings_router,
+        time_router,
     )
 
     @asynccontextmanager
@@ -46,6 +51,19 @@ def create_app(use_encryption: bool = False):
         app.state.config_mgr = config_mgr
         app.state.endpoint_mgr = EndpointManager(svc=config_mgr._svc)
         app.state.agent_mgr = AgentManager(svc=config_mgr._svc)
+
+        app_registry = AppRegistry(svc=config_mgr._svc)
+        apps_dir = PROJECT_ROOT / "apps"
+        app_registry.scan_apps_directory(str(apps_dir))
+        app.state.app_registry = app_registry
+        app.state.agent_app_mgr = AgentAppManager(svc=config_mgr._svc)
+
+        app_tab_mgr = AppTabManager(svc=config_mgr._svc, app_registry=app_registry)
+        app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
+        app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
+
+        app.state.time_svc = TimeService(svc=config_mgr._svc)
+
         app.state.encryption_in_progress = False
 
         degraded = []
@@ -73,6 +91,8 @@ def create_app(use_encryption: bool = False):
     app.include_router(settings_router.router)
     app.include_router(providers_router.router)
     app.include_router(agents_router.router)
+    app.include_router(apps_router.router)
+    app.include_router(time_router.router)
 
     app.add_middleware(EncryptionMiddleware)
 

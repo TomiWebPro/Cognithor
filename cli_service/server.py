@@ -176,8 +176,18 @@ def main() -> None:
         action="store_true",
         help="Force encrypted SQLite (requires pysqlcipher3)",
     )
+    parser.add_argument(
+        "-s", "--simulate",
+        action="store_true",
+        help="Launch agent simulation CLI (test context coherence)",
+    )
 
     args = parser.parse_args()
+
+    if args.simulate:
+        from sim_agent_service import simulation_main
+        simulation_main()
+        return
 
     if args.interactive:
         from cli_service.interactive import interactive_main

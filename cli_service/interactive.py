@@ -36,6 +36,12 @@ from cli_service.display import (
     print_empty,
 )
 from cli_service.prompts import ask, ask_secret, confirm, choose, pause
+from cli_service.server import detect_db_encryption
+from cli_service.onboarding import cmd_init
+
+def db_exists() -> bool:
+    return DB_PATH.exists()
+
 
 PYSQLCIPHER_AVAILABLE = False
 try:
@@ -46,11 +52,14 @@ except ImportError:
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DB_PATH = DATA_DIR / "cognithor.db"
+APPS_DIR = Path(__file__).resolve().parent.parent / "apps"
 
 CONFIG: dict = {
     "config_mgr": None,
     "tracker": None,
     "agent_mgr": None,
+    "app_registry": None,
+    "agent_app_mgr": None,
     "use_encryption": False,
 }
 
@@ -65,6 +74,8 @@ def _init_services(use_encryption: bool = False) -> None:
     from endpoint.database import Tracker
     from api_service.database import ApiConfigManager
     from agents_service.database import AgentManager
+    from apps_service.database import AppRegistry, AgentAppManager
+    from core import TimeService
     from secure_db_service import SecureDbService
 
     log_db = LogDatabase(
@@ -97,309 +108,17 @@ def _init_services(use_encryption: bool = False) -> None:
 
     CONFIG["agent_mgr"] = AgentManager(svc=svc)
 
+    app_registry = AppRegistry(svc=svc)
+    app_registry.scan_apps_directory(str(APPS_DIR))
+    CONFIG["app_registry"] = app_registry
+    CONFIG["agent_app_mgr"] = AgentAppManager(svc=svc)
 
-def db_exists() -> bool:
-    return DB_PATH.exists()
-
-
-def detect_db_encryption() -> bool:
-    if not DB_PATH.exists():
-        return PYSQLCIPHER_AVAILABLE
-
-    import sqlite3
-
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.execute("SELECT name FROM sqlite_master LIMIT 1")
-        conn.close()
-        return False
-    except sqlite3.DatabaseError:
-        pass
-
-    if not PYSQLCIPHER_AVAILABLE:
-        print_empty()
-        console.print(Panel(
-            Text(
-                "The database file appears to be encrypted,\n"
-                "and pysqlcipher3 is not installed.\n\n"
-                "Options:\n"
-                "  1. Install pysqlcipher3\n"
-                "  2. Reset with NEW encrypted database\n"
-                "  3. Reset with NEW plain-text database",
-                style="yellow",
-            ),
-            title="[bold red]Database Locked[/bold red]",
-            box=rich_box.HEAVY,
-            border_style="red",
-            padding=(1, 2),
-        ))
-
-        choice = choose(
-            ["Install pysqlcipher3", "Reset → NEW encrypted database",
-             "Reset → NEW plain-text database", "Quit"],
-            title="How would you like to proceed?",
-            default=2,
-        )
-
-        if choice == 0:
-            import subprocess
-            try:
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "pysqlcipher3"]
-                )
-                print_success("Installed pysqlcipher3. Please restart.")
-            except subprocess.CalledProcessError:
-                print_error("Installation failed.")
-                print_info("Try: sudo apt install libsqlcipher-dev && pip install pysqlcipher3")
-            sys.exit(1)
-        elif choice == 1:
-            from cli_service.onboarding import cmd_clear
-            cmd_clear(force=True)
-            print_success("Cleared. Re-initializing with encryption...")
-            return True
-        elif choice == 2:
-            from cli_service.onboarding import cmd_clear
-            cmd_clear(force=True)
-            print_success("Cleared. Re-initializing plain-text...")
-            return False
-        else:
-            sys.exit(0)
-
-    from secure_db_service import SecureDbService
-    try:
-        svc = SecureDbService(db_path=DB_PATH, use_encryption=True)
-        svc.query_one("SELECT 1")
-        return True
-    except Exception:
-        pass
-
-    try:
-        svc = SecureDbService(db_path=DB_PATH, use_encryption=False)
-        svc.query_one("SELECT 1")
-        return False
-    except Exception:
-        pass
-
-    print_empty()
-    console.print(Panel(
-        Text("The database file is invalid or corrupt.", style="yellow"),
-        title="[bold red]Corrupt Database[/bold red]",
-        box=rich_box.HEAVY,
-        border_style="red",
-        padding=(1, 2),
-    ))
-
-    choice = choose(
-        ["Reset → NEW encrypted database", "Reset → NEW plain-text database", "Quit"],
-        title="Recovery options",
-        default=2,
-    )
-    if choice == 0:
-        from cli_service.onboarding import cmd_clear
-        cmd_clear(force=True)
-        print_success("Cleared. Re-initializing with encryption...")
-        return True
-    elif choice == 1:
-        from cli_service.onboarding import cmd_clear
-        cmd_clear(force=True)
-        print_success("Cleared. Re-initializing plain-text...")
-        return False
-    else:
-        sys.exit(0)
-
-
-def cmd_init() -> None:
-    print_header("Initialize Database", "Step 1/3: Create database")
-
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    removed = 0
-    for f in list(DATA_DIR.glob("cognithor*")):
-        f.unlink()
-        removed += 1
-        print_dim(f"Removed stale: {f.name}")
-
-    print_empty()
-    use_enc = confirm(
-        "Use database encryption?",
-        default=True,
-        hint="Encryption protects data at rest via SQLCipher (AES-256)",
-    )
-
-    if use_enc:
-        if not PYSQLCIPHER_AVAILABLE:
-            print_warning("pysqlcipher3 not installed. Falling back to plain-text SQLite.")
-            use_enc = False
-        else:
-            from secure_db_service import get_or_create_key
-            db_key = get_or_create_key()
-            print_success(f"DB key {'generated' if db_key else 'ready'}")
-
-    print_step(2, 3, "Creating tables and seeding defaults")
-    from secure_db_service import SecureDbService
-    from log_service import LogDatabase, LogService
-
-    svc = SecureDbService(
-        db_path=DB_PATH,
-        use_encryption=use_enc,
-        key_name="db_key",
-    )
-
-    log_db = LogDatabase(
-        db_path=DATA_DIR / "cognithor_logs.db",
-        use_encryption=use_enc,
-    )
-    log_svc = LogService(database=log_db)
-    print_success("Log database initialized")
-
-    from api_service.database import DEFAULT_CONFIG, hash_password
-    import secrets
-
-    svc.execute_script("""
-        CREATE TABLE IF NOT EXISTS api_config (
-            id    INTEGER PRIMARY KEY AUTOINCREMENT,
-            key   TEXT NOT NULL UNIQUE,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS api_users (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            username        TEXT NOT NULL UNIQUE,
-            hashed_password TEXT NOT NULL,
-            created_at      TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS providers (
-            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-            name                    TEXT NOT NULL UNIQUE,
-            api_key                 TEXT,
-            base_url                TEXT NOT NULL,
-            endpoint_path           TEXT DEFAULT '/chat/completions',
-            models                  TEXT,
-            active_models           TEXT DEFAULT '{}',
-            headers_template        TEXT DEFAULT '{}',
-            auth_type               TEXT DEFAULT 'bearer',
-            auth_header_name        TEXT,
-            body_template           TEXT NOT NULL,
-            response_content_path   TEXT DEFAULT 'choices.0.message.content',
-            response_usage_input_path  TEXT DEFAULT 'usage.prompt_tokens',
-            response_usage_output_path TEXT DEFAULT 'usage.completion_tokens',
-            response_usage_cost_path   TEXT,
-            is_streaming            INTEGER DEFAULT 0,
-            is_active               INTEGER DEFAULT 0,
-            max_retries             INTEGER DEFAULT 3,
-            timeout_seconds         INTEGER DEFAULT 60,
-            max_concurrent          INTEGER DEFAULT 5,
-            created_at              TEXT DEFAULT (datetime('now')),
-            updated_at              TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS usage_log (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider        TEXT NOT NULL,
-            model           TEXT NOT NULL,
-            input_tokens    INTEGER DEFAULT 0,
-            output_tokens   INTEGER DEFAULT 0,
-            cost            REAL DEFAULT 0.0,
-            duration_ms     REAL,
-            status          TEXT DEFAULT 'completed',
-            context         TEXT,
-            timestamp       TEXT DEFAULT (datetime('now')),
-            metadata        TEXT
-        );
-        CREATE TABLE IF NOT EXISTS health_checks (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            provider    TEXT NOT NULL,
-            available   INTEGER NOT NULL,
-            latency_ms  REAL,
-            error       TEXT,
-            checked_at  TEXT DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS agents (
-            id                INTEGER PRIMARY KEY AUTOINCREMENT,
-            agent_id          TEXT NOT NULL UNIQUE,
-            name              TEXT NOT NULL,
-            context_window    INTEGER DEFAULT 4096,
-            model_ref         TEXT,
-            backup_model_ref  TEXT,
-            created_at        TEXT DEFAULT (datetime('now')),
-            updated_at        TEXT DEFAULT (datetime('now'))
-        );
-    """)
-
-    for key, default_value in DEFAULT_CONFIG.items():
-        existing = svc.query_one("SELECT value FROM api_config WHERE key = ?", (key,))
-        if existing is not None:
-            continue
-        if default_value is None:
-            if key == "encryption_key":
-                continue
-            value = secrets.token_hex(32)
-        else:
-            value = default_value
-        svc.execute("INSERT INTO api_config (key, value) VALUES (?, ?)", (key, value))
-
-    admin = svc.query_one("SELECT id FROM api_users WHERE username = ?", ("admin",))
-    if admin is None:
-        import base64 as _b64
-        raw_pw = _b64.b64encode(secrets.token_bytes(12)).decode()
-        svc.execute(
-            "INSERT INTO api_users (username, hashed_password) VALUES (?, ?)",
-            ("admin", hash_password(raw_pw)),
-        )
-        svc.execute(
-            "INSERT OR REPLACE INTO api_config (key, value) VALUES (?, ?)",
-            ("frontend_password", raw_pw),
-        )
-        print_success("Admin user created")
-        print_hint("Use 'Connection info' in main menu to reveal credentials")
-
-    from endpoint.database import DEFAULT_PROVIDERS
-    import json
-    import datetime as _dt
-
-    for rec in DEFAULT_PROVIDERS:
-        existing = svc.query_one(
-            "SELECT id FROM providers WHERE name = ?", (rec.name,)
-        )
-        if existing:
-            continue
-        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        svc.execute(
-            """INSERT INTO providers
-                (name, api_key, base_url, endpoint_path, models, active_models,
-                 headers_template, auth_type, auth_header_name, body_template,
-                 response_content_path, response_usage_input_path,
-                 response_usage_output_path, response_usage_cost_path,
-                 is_streaming, is_active, max_retries, timeout_seconds, max_concurrent,
-                 created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                rec.name, rec.api_key, rec.base_url, rec.endpoint_path,
-                json.dumps(rec.models), json.dumps(rec.active_models),
-                json.dumps(rec.headers_template), rec.auth_type,
-                rec.auth_header_name, rec.body_template,
-                rec.response_content_path, rec.response_usage_input_path,
-                rec.response_usage_output_path, rec.response_usage_cost_path,
-                int(rec.is_streaming), int(rec.is_active),
-                rec.max_retries, rec.timeout_seconds, rec.max_concurrent,
-                now, now,
-            ),
-        )
-    print_success("Default providers seeded")
-
-    from api_service.database import ApiConfigManager
-    from endpoint.database import Tracker
-    from agents_service.database import AgentManager
-    CONFIG["use_encryption"] = use_enc
-    CONFIG["tracker"] = Tracker(
-        db_path=DB_PATH, use_encryption=use_enc, log_service=log_svc, svc=svc,
-    )
-    CONFIG["config_mgr"] = ApiConfigManager(
-        db_path=DB_PATH, svc=svc, key_name="db_key",
-    )
-    CONFIG["agent_mgr"] = AgentManager(svc=svc)
+    from core import TimeService
+    CONFIG["time_svc"] = TimeService(svc=svc)
 
     print_empty()
     print_step(3, 3, "Initialization complete")
-    enc_label = "encrypted" if use_enc else "plain-text"
+    enc_label = "encrypted" if use_encryption else "plain-text"
     print_success(f"Database initialized ({enc_label})")
     print_hint("Next: Set up providers with API keys in 'Provider management'")
 
@@ -723,10 +442,223 @@ def cmd_agents_menu() -> None:
             aidx = choose(alist, title="Select agent to DELETE")
             agent = agents[aidx]
             if confirm(f"DELETE agent '{agent.name}' ({agent.agent_id}) permanently?", default=False):
+                agent_app_mgr = CONFIG.get("agent_app_mgr")
+                if agent_app_mgr:
+                    agent_app_mgr.uninstall_all_for_agent(agent.agent_id)
                 agent_mgr.delete_agent(agent.agent_id)
                 print_success(f"Deleted agent: {agent.agent_id}")
             else:
                 print_warning("Cancelled")
+
+
+def cmd_apps_menu() -> None:
+    app_registry = CONFIG["app_registry"]
+    agent_app_mgr = CONFIG["agent_app_mgr"]
+    agent_mgr = CONFIG["agent_mgr"]
+
+    while True:
+        print_header("App Management", "Main > Apps")
+
+        apps = app_registry.list_apps()
+        agents = agent_mgr.list_agents() if agent_mgr else []
+
+        if apps:
+            rows = []
+            for a in apps:
+                avail = "●" if a.is_available else "○"
+                rows.append([avail, a.icon or "◆", a.app_id, a.name, a.version, a.author])
+            print_table(
+                ["", "", "App ID", "Name", "Version", "Author"],
+                rows,
+                title="Registered Apps",
+            )
+        else:
+            print_warning("No apps registered in the system")
+            print_hint("Apps are auto-discovered from the apps/ directory")
+
+        print_empty()
+        choice = choose(
+            [
+                "Show app details",
+                "Install app for an agent",
+                "Uninstall app from an agent",
+                "Toggle enable/disable for an agent",
+                "List apps installed for an agent",
+                "Rescan apps directory",
+                "Back to main menu",
+            ],
+            title="Select an action",
+            default=5,
+            hint="Manage agent applications and tools",
+        )
+
+        if choice == 6:
+            return
+
+        if choice == 0:
+            if not apps:
+                print_warning("No apps registered")
+                pause()
+                continue
+            alist = [f"{a.app_id} — {a.name} (v{a.version})" for a in apps]
+            aidx = choose(alist, title="Select an app to inspect")
+            app = apps[aidx]
+
+            import json
+            manifest = {}
+            if app.manifest:
+                try:
+                    manifest = json.loads(app.manifest)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            params = manifest.get("parameters", [])
+            outputs = manifest.get("outputs", [])
+
+            lines = [
+                f"  ID:             {app.app_id}",
+                f"  Name:           {app.name}",
+                f"  Description:    {app.description}",
+                f"  Version:        {app.version}",
+                f"  Author:         {app.author}",
+                f"  Type:           {app.type}",
+                f"  Available:      {'Yes' if app.is_available else 'No'}",
+                f"  Requires Confirm: {'Yes' if app.requires_confirmation else 'No'}",
+                f"  Timeout:        {app.timeout_seconds}s",
+                f"  Directory:      {app.directory or '—'}",
+            ]
+            if params:
+                param_lines = [f"    {p.get('name', '?')} ({p.get('type', 'string')}){' *' if p.get('required') else ''} — {p.get('description', '')}" for p in params]
+                lines.append(f"  Parameters ({len(params)}):")
+                lines.extend(param_lines)
+            if outputs:
+                out_lines = [f"    {o.get('name', '?')} ({o.get('type', 'string')}) — {o.get('description', '')}" for o in outputs]
+                lines.append(f"  Outputs ({len(outputs)}):")
+                lines.extend(out_lines)
+
+            console.print(Panel(
+                Text("\n".join(lines)),
+                title=f"[bold cyan]{app.name}[/bold cyan]",
+                box=rich_box.ROUNDED,
+                border_style="cyan",
+                padding=(1, 2),
+            ))
+            pause()
+
+        elif choice == 1:
+            if not apps:
+                print_warning("No apps registered")
+                pause()
+                continue
+            avail_apps = [a for a in apps if a.is_available]
+            if not avail_apps:
+                print_warning("No available apps to install")
+                pause()
+                continue
+            if not agents:
+                print_warning("No agents created yet. Create an agent first.")
+                pause()
+                continue
+
+            alist = [f"{a.app_id} — {a.name}" for a in avail_apps]
+            aidx = choose(alist, title="Select app to install")
+            app = avail_apps[aidx]
+
+            glist = [f"{g.agent_id} — {g.name}" for g in agents]
+            gidx = choose(glist, title=f"Install '{app.name}' on which agent?")
+            agent = agents[gidx]
+
+            result = agent_app_mgr.install_app(agent.agent_id, app.app_id)
+            if result is None:
+                print_warning(f"App '{app.app_id}' is already installed for '{agent.name}'")
+            else:
+                print_success(f"Installed '{app.name}' on '{agent.name}'")
+            pause()
+
+        elif choice == 2:
+            if not agents:
+                print_warning("No agents created yet.")
+                pause()
+                continue
+
+            glist = [f"{g.agent_id} — {g.name}" for g in agents]
+            gidx = choose(glist, title="Select agent to uninstall from")
+            agent = agents[gidx]
+
+            installed = agent_app_mgr.list_agent_apps(agent.agent_id)
+            if not installed:
+                print_warning(f"No apps installed for '{agent.name}'")
+                pause()
+                continue
+
+            ilist = [f"{i.app_id}" for i in installed]
+            iidx = choose(ilist, title=f"Select app to uninstall from '{agent.name}'")
+            target = installed[iidx]
+
+            if confirm(f"Uninstall '{target.app_id}' from '{agent.name}'?", default=False):
+                agent_app_mgr.uninstall_app(agent.agent_id, target.app_id)
+                print_success(f"Uninstalled '{target.app_id}' from '{agent.name}'")
+            else:
+                print_warning("Cancelled")
+            pause()
+
+        elif choice == 3:
+            if not agents:
+                print_warning("No agents created yet.")
+                pause()
+                continue
+
+            glist = [f"{g.agent_id} — {g.name}" for g in agents]
+            gidx = choose(glist, title="Select agent to toggle app")
+            agent = agents[gidx]
+
+            installed = agent_app_mgr.list_agent_apps(agent.agent_id)
+            if not installed:
+                print_warning(f"No apps installed for '{agent.name}'")
+                pause()
+                continue
+
+            ilist = [f"{'●' if i.is_enabled else '○'} {i.app_id}" for i in installed]
+            iidx = choose(ilist, title=f"Select app to toggle for '{agent.name}'")
+            target = installed[iidx]
+
+            if target.is_enabled:
+                agent_app_mgr.disable_app(agent.agent_id, target.app_id)
+                print_success(f"Disabled '{target.app_id}' for '{agent.name}'")
+            else:
+                agent_app_mgr.enable_app(agent.agent_id, target.app_id)
+                print_success(f"Enabled '{target.app_id}' for '{agent.name}'")
+            pause()
+
+        elif choice == 4:
+            if not agents:
+                print_warning("No agents created yet.")
+                pause()
+                continue
+
+            glist = [f"{g.agent_id} — {g.name}" for g in agents]
+            gidx = choose(glist, title="Select agent to list apps")
+            agent = agents[gidx]
+
+            installed = agent_app_mgr.list_agent_apps(agent.agent_id)
+            if not installed:
+                print_warning(f"No apps installed for '{agent.name}'")
+            else:
+                rows = []
+                for i in installed:
+                    status = "● enabled" if i.is_enabled else "○ disabled"
+                    rows.append([i.app_id, status])
+                print_table(
+                    ["App ID", "Status"],
+                    rows,
+                    title=f"Apps installed for '{agent.name}' ({agent.agent_id})",
+                )
+            pause()
+
+        elif choice == 5:
+            count = len(app_registry.scan_apps_directory(str(APPS_DIR)))
+            print_success(f"Rescanned apps directory. Found {count} apps.")
+            pause()
 
 
 def cmd_models_menu(tracker, provider) -> None:
@@ -1226,6 +1158,105 @@ def cmd_database_menu() -> None:
             _do_encrypt()
 
 
+def cmd_time_menu() -> None:
+    time_svc = CONFIG.get("time_svc")
+    if time_svc is None:
+        print_warning("Time service not initialized.")
+        pause()
+        return
+
+    while True:
+        print_header("Time Configuration", "Main > Time")
+
+        cfg = time_svc.get_config()
+        now = time_svc.now()
+
+        lines = [
+            f"  Real epoch:    {cfg.real_epoch}",
+            f"  Agent epoch:   {cfg.agent_epoch}",
+            f"  Ratio:         {cfg.ratio}x",
+            "",
+            f"  Current agent time: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"  Current timestamp:  {time_svc.now_timestamp():.0f}",
+        ]
+        now_real = __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+        lines.append(f"  Real time:          {now_real.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+        console.print(Panel(
+            Text("\n".join(lines)),
+            title="[bold cyan]Time Configuration[/bold cyan]",
+            box=rich_box.ROUNDED,
+            border_style="cyan",
+            padding=(1, 2),
+        ))
+
+        print_empty()
+        choice = choose(
+            [
+                "Set real epoch (day one mapping)",
+                "Set agent epoch (day one mapping)",
+                "Set ratio (speed multiplier)",
+                "Reset to defaults (1970-01-01 1:1)",
+                "Back to main menu",
+            ],
+            title="Select an action",
+            default=4,
+            hint="Time flows at ratio × real time from real_epoch",
+        )
+
+        if choice == 4:
+            return
+
+        if choice == 0:
+            val = ask(
+                "Real epoch (ISO datetime)",
+                default=cfg.real_epoch,
+                hint="e.g. 1999-05-21T00:00:00+00:00",
+            )
+            if val:
+                try:
+                    time_svc.set_config(real_epoch=str(val))
+                    print_success("Real epoch updated")
+                except Exception as e:
+                    print_error(str(e))
+
+        elif choice == 1:
+            val = ask(
+                "Agent epoch (ISO datetime)",
+                default=cfg.agent_epoch,
+                hint="e.g. 2024-06-15T00:00:00+00:00",
+            )
+            if val:
+                try:
+                    time_svc.set_config(agent_epoch=str(val))
+                    print_success("Agent epoch updated")
+                except Exception as e:
+                    print_error(str(e))
+
+        elif choice == 2:
+            val = ask(
+                "Ratio (speed multiplier)",
+                default=str(cfg.ratio),
+                hint="1.0 = real time, 3.0 = 3x faster, 0.5 = half speed",
+            )
+            if val:
+                try:
+                    time_svc.set_config(ratio=float(val))
+                    print_success(f"Ratio set to {float(val)}x")
+                except (ValueError, Exception) as e:
+                    print_error(str(e))
+
+        elif choice == 3:
+            if confirm("Reset time config to defaults (1970-01-01, 1:1)?"):
+                from core.time.time_service import _DEFAULT_REAL_EPOCH, _DEFAULT_AGENT_EPOCH, _DEFAULT_RATIO
+                time_svc.set_config(
+                    real_epoch=_DEFAULT_REAL_EPOCH,
+                    agent_epoch=_DEFAULT_AGENT_EPOCH,
+                    ratio=_DEFAULT_RATIO,
+                )
+                print_success("Reset to defaults")
+
+
 def interactive_main() -> bool:
     print_banner(subtitle="Backend Management CLI")
     console.print(
@@ -1244,7 +1275,8 @@ def interactive_main() -> bool:
             print_warning("No database found. Let's set one up.")
             print_hint("You'll be guided through initialization")
             print_empty()
-            cmd_init()
+            use_enc = confirm("Enable database encryption?", default=PYSQLCIPHER_AVAILABLE)
+            cmd_init(use_encryption=use_enc, verbose=False)
     except Exception as e:
         print_error(str(e))
         import traceback
@@ -1264,9 +1296,11 @@ def interactive_main() -> bool:
             config_mgr = CONFIG.get("config_mgr")
             tracker = CONFIG.get("tracker")
             agent_mgr = CONFIG.get("agent_mgr")
+            app_registry = CONFIG.get("app_registry")
             status_api = "N/A"
             status_providers = "0"
             status_agents = "0"
+            status_apps = "0"
             status_active = "none"
             if config_mgr and tracker:
                 try:
@@ -1276,6 +1310,8 @@ def interactive_main() -> bool:
                     status_providers = str(len(providers))
                     if agent_mgr:
                         status_agents = str(len(agent_mgr.list_agents()))
+                    if app_registry:
+                        status_apps = str(len(app_registry.list_apps()))
                     act = [p.name for p in providers if any(p.active_models.values()) or p.is_active]
                     status_active = act[0] if act else "none"
                 except Exception:
@@ -1288,7 +1324,8 @@ def interactive_main() -> bool:
                 (f"  {'API:':<13}", "bold"), (f"{status_api}\n", "cyan"),
                 (f"  {'Providers:':<13}", "bold"), (f"{status_providers}", "cyan"),
                 ("  active: ", "dim"), (f"{status_active}\n", "cyan"),
-                (f"  {'Agents:':<13}", "bold"), (f"{status_agents}\n", "cyan"),
+                (f"  {'Agents:':<13}", "bold"), (f"{status_agents}", "cyan"),
+                (f"  {'Apps:':<13}", "bold"), (f"{status_apps}\n", "cyan"),
             )
 
             console.print(Panel(
@@ -1304,13 +1341,15 @@ def interactive_main() -> bool:
                 [
                     "Provider Management",
                     "Agent Management",
+                    "App Management",
+                    "Time Configuration",
                     "Database Management",
                     "Connection Info",
                     "Start server",
                     "Quit",
                 ],
                 title="Select an option",
-                default=5,
+                default=6,
                 hint="Manage Cognithor backend configuration",
             )
 
@@ -1319,12 +1358,16 @@ def interactive_main() -> bool:
             elif choice == 1:
                 cmd_agents_menu()
             elif choice == 2:
-                cmd_database_menu()
+                cmd_apps_menu()
             elif choice == 3:
-                cmd_connection_info()
+                cmd_time_menu()
             elif choice == 4:
-                return True
+                cmd_database_menu()
             elif choice == 5:
+                cmd_connection_info()
+            elif choice == 6:
+                return True
+            elif choice == 7:
                 print_empty()
                 console.print(
                     Panel(

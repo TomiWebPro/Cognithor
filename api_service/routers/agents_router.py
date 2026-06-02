@@ -87,10 +87,13 @@ async def update_agent(
 async def delete_agent(
     agent_id: str,
     agent_mgr: AgentManager = Depends(_get_agent_mgr),
+    request: Request = None,
     _: str = Depends(get_current_user),
 ):
     existing = agent_mgr.get_agent(agent_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent_mgr.delete_agent(agent_id)
+    if request is not None and hasattr(request.app.state, "agent_app_mgr"):
+        request.app.state.agent_app_mgr.uninstall_all_for_agent(agent_id)
     return {"deleted": True}
