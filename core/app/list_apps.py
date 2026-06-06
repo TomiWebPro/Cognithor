@@ -27,9 +27,8 @@ class ListAppsHandler(AppHandler):
         lines.append("")
 
         for app in apps:
-            icon = app.icon or "\u25c6"
             lines.append(f"  {app.app_id}")
-            lines.append(f"    {icon} {app.name}")
+            lines.append(f"    {app.name}")
             desc = (app.description or "No description available.").replace("\n", " ")
             lines.append(f"    {desc}")
             lines.append(f'    {{open_app:"{app.app_id}"}}')

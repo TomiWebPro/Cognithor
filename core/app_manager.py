@@ -5,10 +5,13 @@ import json
 import random
 import string
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from secure_db_service import SecureDbService
 from apps_service import AppRegistry, AppRecord
+
+if TYPE_CHECKING:
+    from core.past_actions import PastActionsService
 
 
 def generate_tab_id() -> str:
@@ -224,7 +227,6 @@ class AppTabManager:
         self.open_app(
             agent_id,
             "__list_apps__",
-            tab_label="Available Apps",
             is_persistent=True,
         )
 
@@ -254,26 +256,42 @@ class AppTabManager:
         for rec in self.list_open_apps(agent_id):
             self.refresh_interface(rec.id)
 
-    def get_agent_context(self, agent_id: str) -> str:
+    def get_agent_context(
+        self,
+        agent_id: str,
+        past_actions_svc: Optional[PastActionsService] = None,
+        max_past_actions: int = 15,
+    ) -> str:
         self.ensure_persistent_tabs(agent_id)
         self.refresh_interfaces(agent_id)
         records = self.list_open_apps(agent_id)
 
-        if not records:
+        if not records and past_actions_svc is None:
             return ""
 
         sections: list[str] = []
-        for i, rec in enumerate(records, start=1):
+        tab_num = 1
+
+        if past_actions_svc is not None:
+            past_interface = past_actions_svc.generate_tab_interface(
+                agent_id, max_past_actions,
+            )
+            if past_interface:
+                sections.append(f"[tab {tab_num}] {past_interface}")
+                tab_num += 1
+
+        for rec in records:
             if rec.interface_text:
                 if sections:
                     sections.append("")
                 text = rec.interface_text
                 idx = text.find('\n')
                 if idx == -1:
-                    text = f"[tab {i}] {text}"
+                    text = f"[tab {tab_num}] {text}"
                 else:
-                    text = f"[tab {i}] {text[:idx]}{text[idx:]}"
+                    text = f"[tab {tab_num}] {text[:idx]}{text[idx:]}"
                 sections.append(text)
+                tab_num += 1
 
         return "\n".join(sections)
 

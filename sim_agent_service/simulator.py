@@ -60,7 +60,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     from api_service.database import ApiConfigManager
     from agents_service.database import AgentManager
     from apps_service.database import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler
+    from core import AppTabManager, ListAppsHandler, PastActionsService, TimeService
     from apps.list_directory.handler import ListDirectoryHandler
 
     log_db = LogDatabase(
@@ -91,6 +91,9 @@ def _init_services(use_encryption: bool = False) -> dict:
     app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
 
+    time_svc = TimeService(svc=svc)
+    past_actions_svc = PastActionsService(svc=svc)
+
     return {
         "svc": svc,
         "config_mgr": config_mgr,
@@ -98,6 +101,8 @@ def _init_services(use_encryption: bool = False) -> dict:
         "app_registry": app_registry,
         "agent_app_mgr": agent_app_mgr,
         "app_tab_mgr": app_tab_mgr,
+        "time_svc": time_svc,
+        "past_actions_svc": past_actions_svc,
     }
 
 
@@ -105,8 +110,17 @@ def _oj(data: dict, indent: Optional[int] = None) -> str:
     return json.dumps(data, indent=indent)
 
 
-def _context(agent_id: str, app_tab_mgr) -> str:
-    return app_tab_mgr.get_agent_context(agent_id)
+def _context(
+    agent_id: str,
+    app_tab_mgr,
+    past_actions_svc=None,
+    max_past_actions=15,
+) -> str:
+    return app_tab_mgr.get_agent_context(
+        agent_id,
+        past_actions_svc=past_actions_svc,
+        max_past_actions=max_past_actions,
+    )
 
 
 def _handle_open(args: dict, services: dict, agent_id: str) -> Optional[dict]:
@@ -151,6 +165,7 @@ def _handle_input(
     content: str,
     services: dict,
     agent_id: str,
+    agent: Optional[object] = None,
 ) -> dict:
     try:
         parsed = json.loads(content)
@@ -158,10 +173,18 @@ def _handle_input(
         parsed = {"raw": content}
 
     app_tab_mgr = services["app_tab_mgr"]
+    past_actions_svc = services.get("past_actions_svc")
+    max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
+
     app_tab_mgr.refresh_interfaces(agent_id)
-    ctx = _context(agent_id, app_tab_mgr)
+    ctx = _context(
+        agent_id, app_tab_mgr,
+        past_actions_svc=past_actions_svc,
+        max_past_actions=max_pa,
+    )
 
     combined = ctx + "\n\n" + content if ctx else content
+
     return {
         "status": "received",
         "input": parsed,
@@ -202,12 +225,28 @@ def _fix_json_keys(raw: str) -> str:
     return re.sub(r'(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', raw)
 
 
-def _dispatch(raw: str, services: dict, agent_id: str) -> list[dict]:
+def _dispatch(
+    raw: str,
+    services: dict,
+    agent_id: str,
+    agent: Optional[object] = None,
+) -> list[dict]:
     results = []
     raw = raw.strip()
 
     if not raw:
         return results
+
+    past_actions_svc = services.get("past_actions_svc")
+    time_svc = services.get("time_svc")
+    max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
+
+    def _ctx() -> str:
+        return _context(
+            agent_id, services["app_tab_mgr"],
+            past_actions_svc=past_actions_svc,
+            max_past_actions=max_pa,
+        )
 
     clean = raw.replace('\\"', '"')
     clean = _fix_json_keys(clean)
@@ -219,69 +258,114 @@ def _dispatch(raw: str, services: dict, agent_id: str) -> list[dict]:
     items = parsed if isinstance(parsed, list) else [parsed]
 
     for item in items:
+        item_raw = json.dumps(item) if isinstance(item, dict) else str(item)
+
         if not isinstance(item, dict):
-            results.append({"error": "Each item must be a JSON object", "raw": str(item)})
+            err = {"error": "Each item must be a JSON object", "raw": str(item)}
+            results.append(err)
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "user", item_raw, time_svc=time_svc,
+                )
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps(err), time_svc=time_svc,
+                )
             continue
 
         item = _normalize(item)
-
         command = item.get("command", "").lower().lstrip("/")
+
+        if past_actions_svc:
+            past_actions_svc.record_action(
+                agent_id, "user", item_raw, time_svc=time_svc,
+            )
+
         if not command:
-            results.append(_handle_input(json.dumps(item), services, agent_id))
+            handler_result = _handle_input(json.dumps(item), services, agent_id, agent=agent)
+            results.append(handler_result)
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps(handler_result), time_svc=time_svc,
+                )
             continue
 
         if command in ("open",):
             result = _handle_open(item, services, agent_id)
             if result:
                 results.append({"type": "result", "command": "open", "data": result})
-                results.append({"type": "context", "content": _context(agent_id, services["app_tab_mgr"])})
+                results.append({"type": "context", "content": _ctx()})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(result), time_svc=time_svc,
+                    )
         elif command in ("close",):
             result = _handle_close(item, services, agent_id)
             if result:
                 results.append({"type": "result", "command": "close", "data": result})
-                results.append({"type": "context", "content": _context(agent_id, services["app_tab_mgr"])})
+                results.append({"type": "context", "content": _ctx()})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(result), time_svc=time_svc,
+                    )
         elif command in ("context",):
-            results.append({"type": "context", "content": _context(agent_id, services["app_tab_mgr"])})
+            content = _ctx()
+            results.append({"type": "context", "content": content})
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps({"context": content}), time_svc=time_svc,
+                )
         elif command in ("tabs",):
             tabs = services["app_tab_mgr"].list_open_apps(agent_id)
-            results.append({
-                "type": "result",
-                "command": "tabs",
-                "data": [
-                    {"tab_id": t.id, "app_id": t.app_id, "tab_label": t.tab_label,
-                     "is_persistent": t.is_persistent}
-                    for t in tabs
-                ],
-            })
+            data = [
+                {"tab_id": t.id, "app_id": t.app_id, "tab_label": t.tab_label,
+                 "is_persistent": t.is_persistent}
+                for t in tabs
+            ]
+            results.append({"type": "result", "command": "tabs", "data": data})
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps({"tabs": data}), time_svc=time_svc,
+                )
         elif command in ("apps",):
             apps = services["app_registry"].list_available_apps()
-            results.append({
-                "type": "result",
-                "command": "apps",
-                "data": [
-                    {"app_id": a.app_id, "name": a.name, "description": a.description, "icon": a.icon}
-                    for a in apps
-                ],
-            })
+            data = [
+                {"app_id": a.app_id, "name": a.name, "description": a.description, "icon": a.icon}
+                for a in apps
+            ]
+            results.append({"type": "result", "command": "apps", "data": data})
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps({"apps": data}), time_svc=time_svc,
+                )
         elif command in ("help",):
-            results.append({
-                "type": "help",
-                "commands": {
-                    "open": {"usage": '{"command": "open", "app_id": "...", "tab_label": "...", "params": {...}}', "description": "Open an app tab"},
-                    "close": {"usage": '{"command": "close", "tab_id": "..."}', "description": "Close a non-persistent tab"},
-                    "context": {"usage": '{"command": "context"}', "description": "Show current context window"},
-                    "tabs": {"usage": '{"command": "tabs"}', "description": "List open tabs"},
-                    "apps": {"usage": '{"command": "apps"}', "description": "List available apps"},
-                    "help": {"usage": '{"command": "help"}', "description": "Show this help"},
-                    "quit": {"usage": '{"command": "quit"}', "description": "Exit simulator"},
-                    "input": {"usage": '{"input": "..."} or plain text', "description": "Simulate agent receiving input"},
-                    "batch": {"usage": '[{...}, {...}]', "description": "Multiple commands at once"},
-                },
-            })
+            help_data = {
+                "open": {"usage": '{"command": "open", "app_id": "...", "tab_label": "...", "params": {...}}', "description": "Open an app tab"},
+                "close": {"usage": '{"command": "close", "tab_id": "..."}', "description": "Close a non-persistent tab"},
+                "context": {"usage": '{"command": "context"}', "description": "Show current context window"},
+                "tabs": {"usage": '{"command": "tabs"}', "description": "List open tabs"},
+                "apps": {"usage": '{"command": "apps"}', "description": "List available apps"},
+                "help": {"usage": '{"command": "help"}', "description": "Show this help"},
+                "quit": {"usage": '{"command": "quit"}', "description": "Exit simulator"},
+                "input": {"usage": '{"input": "..."} or plain text', "description": "Simulate agent receiving input"},
+                "batch": {"usage": '[{...}, {...}]', "description": "Multiple commands at once"},
+            }
+            results.append({"type": "help", "commands": help_data})
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps({"help": help_data}), time_svc=time_svc,
+                )
         elif command in ("quit", "exit"):
             results.append({"type": "quit"})
         else:
-            results.append({"error": f"Unknown command: {command}", "type": "error"})
+            err = {"error": f"Unknown command: {command}", "type": "error"}
+            results.append(err)
+            if past_actions_svc:
+                past_actions_svc.record_action(
+                    agent_id, "assistant", json.dumps(err), time_svc=time_svc,
+                )
+
+    if past_actions_svc:
+        past_actions_svc.trim_actions(agent_id, max_pa)
 
     return results
 
@@ -333,7 +417,13 @@ def simulation_main() -> None:
     print(f"Selected: {agent.name} ({agent_id})")
     print()
 
-    ctx = _context(agent_id, app_tab_mgr)
+    past_actions_svc = services.get("past_actions_svc")
+    max_pa = agent.max_past_actions if hasattr(agent, "max_past_actions") else 15
+    ctx = _context(
+        agent_id, app_tab_mgr,
+        past_actions_svc=past_actions_svc,
+        max_past_actions=max_pa,
+    )
     session = {
         "type": "session",
         "agent": {"name": agent.name, "agent_id": agent.agent_id, "context_window": agent.context_window},
@@ -359,7 +449,7 @@ def simulation_main() -> None:
         if not raw:
             continue
 
-        results = _dispatch(raw, services, agent_id)
+        results = _dispatch(raw, services, agent_id, agent=agent)
 
         for r in results:
             if r.get("type") == "quit":

@@ -28,7 +28,7 @@ def create_app(use_encryption: bool = False):
     from fastapi import FastAPI
     from agents_service import AgentManager
     from apps_service import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, TimeService
+    from core import AppTabManager, ListAppsHandler, TimeService, PastActionsService
     from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
     from api_service.database import ApiConfigManager
@@ -63,6 +63,7 @@ def create_app(use_encryption: bool = False):
         app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
 
         app.state.time_svc = TimeService(svc=config_mgr._svc)
+        app.state.past_actions_svc = PastActionsService(svc=config_mgr._svc)
 
         app.state.encryption_in_progress = False
 
