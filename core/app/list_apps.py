@@ -4,7 +4,7 @@ from typing import Optional
 
 from apps_service import AppRegistry
 
-from core.app_manager import AppHandler
+from core.app.app_manager import AppHandler
 
 
 class ListAppsHandler(AppHandler):
@@ -34,7 +34,6 @@ class ListAppsHandler(AppHandler):
             lines.append(f'    {{open_app:"{app.app_id}"}}')
             lines.append("")
 
-        lines.append("  (persistent tab)")
         return "\n".join(lines)
 
     def execute(self, params: dict) -> dict:

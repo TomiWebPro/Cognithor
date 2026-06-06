@@ -6,15 +6,12 @@ import logging
 import random
 import string
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from secure_db_service import SecureDbService
 from apps_service import AppRegistry, AppRecord
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from core.past_actions import PastActionsService
 
 
 def generate_tab_id() -> str:
@@ -32,6 +29,9 @@ class AppHandler:
 
     def execute(self, params: dict) -> dict:
         raise NotImplementedError
+
+    def get_action_summary(self, params: dict, result: dict) -> Optional[str]:
+        return result.get("past_action_summary")
 
 
 @dataclass
@@ -214,24 +214,40 @@ class AppTabManager:
             return None
         return self._row_to_record(row)
 
-    def ensure_persistent_tabs(self, agent_id: str) -> None:
-        existing = self._svc.query_one(
-            "SELECT id, is_persistent FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
-            (agent_id, "__list_apps__"),
-        )
-        if existing is not None:
-            if not existing["is_persistent"]:
+    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__"]
+
+    def ensure_persistent_tabs(self, agent_id: str, max_past_actions: int = 15) -> None:
+        for app_id in self._SYSTEM_PERSISTENT_APPS:
+            existing = self._svc.query_one(
+                "SELECT id, is_persistent, params FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
+                (agent_id, app_id),
+            )
+            if existing is not None:
                 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                self._svc.execute(
-                    "UPDATE agent_open_apps SET is_persistent = 1, updated_at = ? WHERE id = ?",
-                    (now, existing["id"]),
+                if not existing["is_persistent"]:
+                    self._svc.execute(
+                        "UPDATE agent_open_apps SET is_persistent = 1, updated_at = ? WHERE id = ?",
+                        (now, existing["id"]),
+                    )
+                if app_id == "__past_actions__":
+                    try:
+                        stored = json.loads(existing["params"]) if existing["params"] else {}
+                    except (json.JSONDecodeError, TypeError):
+                        stored = {}
+                    if stored.get("max_past_actions") != max_past_actions:
+                        stored["max_past_actions"] = max_past_actions
+                        self._svc.execute(
+                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(stored), now, existing["id"]),
+                        )
+                continue
+            if app_id == "__list_apps__":
+                self.open_app(agent_id, app_id, is_persistent=True)
+            elif app_id == "__past_actions__":
+                self.open_app(
+                    agent_id, app_id, is_persistent=True,
+                    params={"agent_id": agent_id, "max_past_actions": max_past_actions},
                 )
-            return
-        self.open_app(
-            agent_id,
-            "__list_apps__",
-            is_persistent=True,
-        )
 
     def refresh_interface(self, tab_id: str) -> Optional[str]:
         record = self.get_open_app(tab_id)
@@ -262,41 +278,51 @@ class AppTabManager:
     def get_agent_context(
         self,
         agent_id: str,
-        past_actions_svc: Optional[PastActionsService] = None,
         max_past_actions: int = 15,
     ) -> str:
-        self.ensure_persistent_tabs(agent_id)
+        self.ensure_persistent_tabs(agent_id, max_past_actions)
         self.refresh_interfaces(agent_id)
         records = self.list_open_apps(agent_id)
 
-        if not records and past_actions_svc is None:
+        if not records:
             return ""
 
         sections: list[str] = []
-        tab_num = 1
-
-        if past_actions_svc is not None:
-            past_interface = past_actions_svc.generate_tab_interface(
-                agent_id, max_past_actions,
-            )
-            if past_interface:
-                sections.append(f"[tab {tab_num}] {past_interface}")
-                tab_num += 1
-
-        for rec in records:
+        for i, rec in enumerate(records, start=1):
             if rec.interface_text:
                 if sections:
                     sections.append("")
                 text = rec.interface_text
                 idx = text.find('\n')
                 if idx == -1:
-                    text = f"[tab {tab_num}] {text}"
+                    text = f"[tab {i}] {text}"
                 else:
-                    text = f"[tab {tab_num}] {text[:idx]}{text[idx:]}"
+                    text = f"[tab {i}] {text[:idx]}{text[idx:]}"
+                if rec.is_persistent:
+                    text += "\n  (persistent tab)"
                 sections.append(text)
-                tab_num += 1
 
         return "\n".join(sections)
+
+    def set_tab_persistence(self, tab_id: str, persistent: bool) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._svc.execute(
+            "UPDATE agent_open_apps SET is_persistent = ?, updated_at = ? WHERE id = ?",
+            (int(persistent), now, tab_id),
+        )
+
+    def _find_tab_by_app_and_label(self, agent_id: str, app_id: str, tab_label: str) -> Optional[AgentOpenAppRecord]:
+        for rec in self.list_open_apps(agent_id):
+            if rec.app_id == app_id and rec.tab_label == tab_label:
+                return rec
+        return None
+
+    def update_tab_params(self, tab_id: str, params: dict) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._svc.execute(
+            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(params), now, tab_id),
+        )
 
     def _row_to_record(self, row) -> AgentOpenAppRecord:
         return AgentOpenAppRecord(
