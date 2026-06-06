@@ -116,6 +116,8 @@ The `max_past_actions` limit (default 15) is stored per-agent in the `agents.max
 
 In the simulator (`-s` mode), every interaction is recorded as a past action — including malformed input, unknown commands, open/close operations, and plain-text messages. After each batch, `trim_actions()` keeps the total under the agent's configured limit.
 
+**Important ordering rule**: When a command both records an assistant action AND refreshes the context window (e.g. `open`, `close`), the `record_action()` call **must** happen **before** `get_agent_context()` / `_ctx()`. This ensures the just-recorded assistant response is included in the Past Actions section of the refreshed context. Violating this order causes the agent to see stale past actions that end with its own input but lack the system's response.
+
 ---
 
 ## How the Files Work Together

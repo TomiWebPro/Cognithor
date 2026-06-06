@@ -1,10 +1,13 @@
 from __future__ import annotations
 import datetime
+import logging
 import random
 import string
 from typing import Optional
 
 from secure_db_service import SecureDbService
+
+logger = logging.getLogger(__name__)
 
 from .models import AgentRecord
 
@@ -38,7 +41,7 @@ class AgentManager:
                 "ALTER TABLE agents ADD COLUMN max_past_actions INTEGER DEFAULT 15"
             )
         except Exception:
-            pass
+            logger.info("Column max_past_actions already exists or could not be added", exc_info=True)
 
     def _ensure_unique_id(self) -> str:
         for _ in range(100):

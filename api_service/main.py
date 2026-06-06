@@ -47,9 +47,15 @@ def create_app(use_encryption: bool = False):
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        import logging
+        from log_service import DbLogHandler
+
         config_mgr = ApiConfigManager(use_encryption=use_encryption, key_name="db_key")
         app.state.config_mgr = config_mgr
         app.state.endpoint_mgr = EndpointManager(svc=config_mgr._svc)
+
+        log_svc = app.state.endpoint_mgr.log
+        logging.getLogger().addHandler(DbLogHandler(log_svc))
         app.state.agent_mgr = AgentManager(svc=config_mgr._svc)
 
         app_registry = AppRegistry(svc=config_mgr._svc)

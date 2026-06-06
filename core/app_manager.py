@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import random
 import string
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from typing import TYPE_CHECKING, Optional
 
 from secure_db_service import SecureDbService
 from apps_service import AppRegistry, AppRecord
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.past_actions import PastActionsService
@@ -75,7 +78,7 @@ class AppTabManager:
                 "ALTER TABLE agent_open_apps ADD COLUMN is_persistent INTEGER DEFAULT 0"
             )
         except Exception:
-            pass
+            logger.info("Column is_persistent already exists or could not be added", exc_info=True)
 
     def _ensure_unique_tab_id(self) -> str:
         for _ in range(100):

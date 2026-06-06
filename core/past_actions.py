@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime
-import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from secure_db_service import SecureDbService
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.time import TimeService
@@ -44,7 +46,7 @@ class PastActionsService:
                 "ALTER TABLE past_actions ADD COLUMN bot_timestamp TEXT"
             )
         except Exception:
-            pass
+            logger.info("Column bot_timestamp already exists or could not be added", exc_info=True)
 
     def record_action(
         self,
@@ -127,16 +129,14 @@ class PastActionsService:
         lines.append("  Status: Open")
         lines.append("")
         for a in actions:
-            role_label = a.role.upper() if a.role.lower() in (
-                "user", "assistant", "system", "agent"
-            ) else a.role
+            raw_role = a.role.lower()
+            if raw_role == "user":
+                role_label = "YOU"
+            elif raw_role == "assistant":
+                role_label = "HARNESS"
+            else:
+                role_label = a.role.upper() if raw_role in ("system", "agent") else a.role
             content = a.content
-            try:
-                parsed = json.loads(content)
-                if isinstance(parsed, dict):
-                    content = json.dumps(parsed, indent=2)
-            except (json.JSONDecodeError, TypeError):
-                pass
             ts = ""
             if a.bot_timestamp:
                 try:

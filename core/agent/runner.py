@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 
 from agents_service import AgentManager, parse_model_ref
 from core.app_manager import AppTabManager
 from core.past_actions import PastActionsService
 from endpoint import EndpointManager, Message
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRunner:
@@ -64,7 +67,7 @@ class AgentRunner:
             try:
                 provider, model = parse_model_ref(agent.model_ref)
             except Exception:
-                pass
+                logger.error("Failed to parse model_ref '%s', falling back to default provider", agent.model_ref, exc_info=True)
 
         response, _ = self.endpoint_mgr.chat(
             messages=messages,

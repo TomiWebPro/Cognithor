@@ -1310,6 +1310,7 @@ def interactive_main() -> bool:
             print_empty()
             use_enc = confirm("Enable database encryption?", default=PYSQLCIPHER_AVAILABLE)
             cmd_init(use_encryption=use_enc, verbose=False)
+            _init_services(use_encryption=use_enc)
     except Exception as e:
         print_error(str(e))
         import traceback

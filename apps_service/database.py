@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import importlib.util
 import json
+import logging
 import random
 import string
 from pathlib import Path
@@ -11,6 +12,8 @@ from typing import Optional
 from secure_db_service import SecureDbService
 
 from .models import AppManifest, AppParameter, AppRecord, AgentAppRecord
+
+logger = logging.getLogger(__name__)
 
 
 def validate_icon(icon: str) -> bool:
@@ -223,6 +226,7 @@ class AppRegistry:
                     record = self.register_app(manifest, directory=str(entry))
                     registered.append(record)
             except Exception:
+                logger.error("Failed to load app from %s", entry, exc_info=True)
                 continue
 
         return registered

@@ -26,8 +26,8 @@ class ProviderRecord:
     response_usage_input_path: str = "usage.prompt_tokens"
     response_usage_output_path: str = "usage.completion_tokens"
     response_usage_cost_path: Optional[str] = None
-    is_streaming: bool = False
-    is_active: bool = False
+    is_streaming: Optional[bool] = None
+    is_active: Optional[bool] = None
     max_retries: int = 3
     timeout_seconds: int = 60
     max_concurrent: int = 5

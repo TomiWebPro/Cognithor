@@ -9,6 +9,33 @@ from ..dependencies import get_config_mgr
 router = APIRouter(tags=["settings"])
 
 
+def _validate_password(password: str) -> None:
+    # Password is auto-generated for frontend-backend communication, not a
+    # human-chosen password. The checks below guard against leaving the
+    # default "admin" credential in place after deployment. Auto-generated
+    # tokens naturally satisfy all constraints (≥8 chars, upper, lower, digit).
+    if len(password) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 8 characters"
+        )
+    if not any(c.isupper() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one uppercase letter"
+        )
+    if not any(c.islower() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one lowercase letter"
+        )
+    if not any(c.isdigit() for c in password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one digit"
+        )
+
+
 @router.get("/settings")
 async def get_settings(
     config_mgr: ApiConfigManager = Depends(get_config_mgr),
@@ -49,6 +76,7 @@ async def create_user(
     password = payload.get("password")
     if not username or not password:
         raise HTTPException(status_code=400, detail="username and password are required")
+    _validate_password(password)
     if config_mgr.user_exists(username):
         raise HTTPException(status_code=409, detail="User already exists")
     config_mgr.create_user(username, password)
@@ -65,8 +93,7 @@ async def change_password(
     new_password = payload.get("new_password")
     if not old_password or not new_password:
         raise HTTPException(status_code=400, detail="old_password and new_password are required")
-    if len(new_password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    _validate_password(new_password)
     if not config_mgr.verify_user(current_user, old_password):
         raise HTTPException(status_code=403, detail="Current password is incorrect")
     config_mgr._svc.execute(

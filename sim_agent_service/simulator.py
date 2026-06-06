@@ -69,6 +69,10 @@ def _init_services(use_encryption: bool = False) -> dict:
     )
     log_svc = LogService(database=log_db)
 
+    import logging
+    from log_service import DbLogHandler
+    logging.getLogger().addHandler(DbLogHandler(log_svc))
+
     svc = SecureDbService(
         db_path=DB_PATH,
         use_encryption=use_encryption,
@@ -253,7 +257,15 @@ def _dispatch(
     try:
         parsed = json.loads(clean)
     except json.JSONDecodeError:
-        parsed = {"input": raw}
+        err = {"error": "Nothing matched with the available command", "raw_input": raw}
+        results.append(err)
+        if past_actions_svc:
+            past_actions_svc.record_action(agent_id, "user", raw, time_svc=time_svc)
+            past_actions_svc.record_action(
+                agent_id, "assistant", json.dumps(err), time_svc=time_svc,
+            )
+            past_actions_svc.trim_actions(agent_id, max_pa)
+        return results
 
     items = parsed if isinstance(parsed, list) else [parsed]
 
@@ -284,8 +296,10 @@ def _dispatch(
             handler_result = _handle_input(json.dumps(item), services, agent_id, agent=agent)
             results.append(handler_result)
             if past_actions_svc:
+                pa_record = {k: v for k, v in handler_result.items()
+                             if k not in ("context", "combined_payload")}
                 past_actions_svc.record_action(
-                    agent_id, "assistant", json.dumps(handler_result), time_svc=time_svc,
+                    agent_id, "assistant", json.dumps(pa_record), time_svc=time_svc,
                 )
             continue
 
@@ -293,20 +307,21 @@ def _dispatch(
             result = _handle_open(item, services, agent_id)
             if result:
                 results.append({"type": "result", "command": "open", "data": result})
-                results.append({"type": "context", "content": _ctx()})
                 if past_actions_svc:
+                    pa = {k: v for k, v in result.items() if k != "interface"}
                     past_actions_svc.record_action(
-                        agent_id, "assistant", json.dumps(result), time_svc=time_svc,
+                        agent_id, "assistant", json.dumps(pa), time_svc=time_svc,
                     )
+                results.append({"type": "context", "content": _ctx()})
         elif command in ("close",):
             result = _handle_close(item, services, agent_id)
             if result:
                 results.append({"type": "result", "command": "close", "data": result})
-                results.append({"type": "context", "content": _ctx()})
                 if past_actions_svc:
                     past_actions_svc.record_action(
                         agent_id, "assistant", json.dumps(result), time_svc=time_svc,
                     )
+                results.append({"type": "context", "content": _ctx()})
         elif command in ("context",):
             content = _ctx()
             results.append({"type": "context", "content": content})
@@ -424,14 +439,12 @@ def simulation_main() -> None:
         past_actions_svc=past_actions_svc,
         max_past_actions=max_pa,
     )
-    session = {
+    agent_info = _oj({
         "type": "session",
         "agent": {"name": agent.name, "agent_id": agent.agent_id, "context_window": agent.context_window},
-        "context": ctx,
-    }
-    session_json = _oj(session, indent=2).replace("\\n", "\n").replace('\\"', '"')
+    }, indent=2)
     panel = Panel(
-        Text(session_json),
+        Text(agent_info + "\n\n" + ctx),
         title="[bold cyan]Context Window[/bold cyan]",
         box=rich_box.ROUNDED,
         border_style="cyan",
@@ -454,12 +467,40 @@ def simulation_main() -> None:
         for r in results:
             if r.get("type") == "quit":
                 return
-            text = _oj(r, indent=2).replace("\\n", "\n").replace('\\"', '"')
-            panel = Panel(
-                Text(text),
-                title="[bold cyan]Response[/bold cyan]",
-                box=rich_box.ROUNDED,
-                border_style="cyan",
-                padding=(1, 2),
-            )
+            rtype = r.get("type", "")
+            if rtype == "context":
+                panel = Panel(
+                    Text(r.get("content", "")),
+                    title="[bold green]Context Window[/bold green]",
+                    box=rich_box.ROUNDED,
+                    border_style="green",
+                    padding=(1, 2),
+                )
+            elif rtype == "help":
+                text = _oj(r, indent=2).replace("\\n", "\n").replace('\\"', '"')
+                panel = Panel(
+                    Text(text),
+                    title="[bold yellow]Help[/bold yellow]",
+                    box=rich_box.ROUNDED,
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
+            elif r.get("error"):
+                text = _oj(r, indent=2).replace("\\n", "\n").replace('\\"', '"')
+                panel = Panel(
+                    Text(text),
+                    title="[bold red]Error[/bold red]",
+                    box=rich_box.ROUNDED,
+                    border_style="red",
+                    padding=(1, 2),
+                )
+            else:
+                text = _oj(r, indent=2).replace("\\n", "\n").replace('\\"', '"')
+                panel = Panel(
+                    Text(text),
+                    title="[bold cyan]Response[/bold cyan]",
+                    box=rich_box.ROUNDED,
+                    border_style="cyan",
+                    padding=(1, 2),
+                )
             console.print(panel)

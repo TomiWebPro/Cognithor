@@ -84,7 +84,8 @@ def generate_list_directory_interface(
 
     if result is None:
         path = params.get("path", "")
-        result = execute_list_directory(path) if path else None
+        if path:
+            result = execute_list_directory(path)
 
     if result and result.get("success"):
         lines.append(f"  Path: {result['path']}")
@@ -102,14 +103,6 @@ def generate_list_directory_interface(
             lines.append(f"  ... and {result['entry_count'] - 50} more entries")
     elif result:
         lines.append(f"  Error: {result.get('error', 'Unknown error')}")
-    else:
-        lines.append("  No directory loaded yet.")
-        lines.append("")
-
-    lines.append("")
-    lines.append("  Commands:")
-    lines.append('    {"command": "list", "path": "<dir>"}')
-    lines.append("      List contents of a directory.")
 
     return "\n".join(lines)
 
