@@ -61,6 +61,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     from agents_service.database import AgentManager
     from apps_service.database import AppRegistry, AgentAppManager
     from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService
+    from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
 
     log_db = LogDatabase(
@@ -97,6 +98,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
     app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(past_actions_svc))
+    app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
 
     time_svc = TimeService(svc=svc)
 
@@ -120,10 +122,14 @@ def _context(
     agent_id: str,
     app_tab_mgr,
     max_past_actions=15,
+    show_context_window=False,
+    context_window=4096,
 ) -> str:
     return app_tab_mgr.get_agent_context(
         agent_id,
         max_past_actions=max_past_actions,
+        show_context_window=show_context_window,
+        context_window=context_window,
     )
 
 
@@ -198,11 +204,15 @@ def _handle_input(
 
     app_tab_mgr = services["app_tab_mgr"]
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
+    scw = getattr(agent, "show_context_window", False) if agent else False
+    cw = getattr(agent, "context_window", 4096) if agent else 4096
 
     app_tab_mgr.refresh_interfaces(agent_id)
     ctx = _context(
         agent_id, app_tab_mgr,
         max_past_actions=max_pa,
+        show_context_window=scw,
+        context_window=cw,
     )
 
     combined = ctx + "\n\n" + content if ctx else content
@@ -260,12 +270,17 @@ def _dispatch(
         return results
 
     time_svc = services.get("time_svc")
+    past_actions_svc = services.get("past_actions_svc")
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
+    scw = getattr(agent, "show_context_window", False) if agent else False
+    cw = getattr(agent, "context_window", 4096) if agent else 4096
 
     def _ctx() -> str:
         return _context(
             agent_id, services["app_tab_mgr"],
             max_past_actions=max_pa,
+            show_context_window=scw,
+            context_window=cw,
         )
 
     clean = raw.replace('\\"', '"')
@@ -274,13 +289,13 @@ def _dispatch(
         parsed = json.loads(clean)
     except json.JSONDecodeError:
         err = {"error": "Nothing matched with the available command", "raw_input": raw}
-        results.append(err)
         if past_actions_svc:
             past_actions_svc.record_action(agent_id, "user", raw, time_svc=time_svc)
             past_actions_svc.record_action(
                 agent_id, "assistant", json.dumps(err), time_svc=time_svc,
             )
             past_actions_svc.trim_actions(agent_id, max_pa)
+        results.append({"type": "context", "content": _ctx()})
         return results
 
     items = parsed if isinstance(parsed, list) else [parsed]
@@ -290,7 +305,6 @@ def _dispatch(
 
         if not isinstance(item, dict):
             err = {"error": "Each item must be a JSON object", "raw": str(item)}
-            results.append(err)
             if past_actions_svc:
                 past_actions_svc.record_action(
                     agent_id, "user", item_raw, time_svc=time_svc,
@@ -413,7 +427,6 @@ def _dispatch(
             results.append({"type": "quit"})
         else:
             err = {"error": f"Unknown command: {command}", "type": "error"}
-            results.append(err)
             if past_actions_svc:
                 past_actions_svc.record_action(
                     agent_id, "assistant", json.dumps(err), time_svc=time_svc,
@@ -473,9 +486,13 @@ def simulation_main() -> None:
     print()
 
     max_pa = agent.max_past_actions if hasattr(agent, "max_past_actions") else 15
+    scw = agent.show_context_window if hasattr(agent, "show_context_window") else False
+    cw = agent.context_window if hasattr(agent, "context_window") else 4096
     ctx = _context(
         agent_id, app_tab_mgr,
         max_past_actions=max_pa,
+        show_context_window=scw,
+        context_window=cw,
     )
     agent_info = _oj({
         "type": "session",

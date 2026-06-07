@@ -14,6 +14,15 @@ from apps_service import AppRegistry, AppRecord
 logger = logging.getLogger(__name__)
 
 
+def _count_tokens(text: str) -> int:
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except ImportError:
+        return len(text) // 4
+
+
 def generate_tab_id() -> str:
     chars = string.ascii_lowercase + string.digits
     return ''.join(random.choices(chars, k=6))
@@ -214,10 +223,22 @@ class AppTabManager:
             return None
         return self._row_to_record(row)
 
-    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__"]
+    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__"]
 
-    def ensure_persistent_tabs(self, agent_id: str, max_past_actions: int = 15) -> None:
+    def ensure_persistent_tabs(
+        self,
+        agent_id: str,
+        max_past_actions: int = 15,
+        show_context_window: bool = False,
+    ) -> None:
         for app_id in self._SYSTEM_PERSISTENT_APPS:
+            if app_id == "__context_window__" and not show_context_window:
+                self._svc.execute(
+                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
+                    (agent_id, app_id),
+                )
+                continue
+
             existing = self._svc.query_one(
                 "SELECT id, is_persistent, params FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
                 (agent_id, app_id),
@@ -247,6 +268,11 @@ class AppTabManager:
                 self.open_app(
                     agent_id, app_id, is_persistent=True,
                     params={"agent_id": agent_id, "max_past_actions": max_past_actions},
+                )
+            elif app_id == "__context_window__":
+                self.open_app(
+                    agent_id, app_id, is_persistent=True,
+                    params={"used_tokens": 0, "max_tokens": 4096},
                 )
 
     def refresh_interface(self, tab_id: str) -> Optional[str]:
@@ -279,28 +305,64 @@ class AppTabManager:
         self,
         agent_id: str,
         max_past_actions: int = 15,
+        show_context_window: bool = False,
+        context_window: int = 4096,
     ) -> str:
-        self.ensure_persistent_tabs(agent_id, max_past_actions)
+        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window)
         self.refresh_interfaces(agent_id)
         records = self.list_open_apps(agent_id)
 
         if not records:
             return ""
 
+        cw_record = None
+        other_records: list[AgentOpenAppRecord] = []
+        for rec in records:
+            if rec.app_id == "__context_window__":
+                cw_record = rec
+            else:
+                other_records.append(rec)
+
+        def _format_section(rec: AgentOpenAppRecord, index: int) -> str:
+            text = rec.interface_text
+            idx = text.find('\n')
+            if idx == -1:
+                text = f"[tab {index}] {text}"
+            else:
+                text = f"[tab {index}] {text[:idx]}{text[idx:]}"
+            if rec.is_persistent:
+                text += "\n  (persistent tab)"
+            return text
+
         sections: list[str] = []
-        for i, rec in enumerate(records, start=1):
+        for i, rec in enumerate(other_records, start=1):
             if rec.interface_text:
                 if sections:
                     sections.append("")
-                text = rec.interface_text
-                idx = text.find('\n')
-                if idx == -1:
-                    text = f"[tab {i}] {text}"
-                else:
-                    text = f"[tab {i}] {text[:idx]}{text[idx:]}"
-                if rec.is_persistent:
-                    text += "\n  (persistent tab)"
-                sections.append(text)
+                sections.append(_format_section(rec, i))
+
+        context_without_cw = "\n".join(sections)
+
+        if cw_record is not None:
+            used_tokens = _count_tokens(context_without_cw)
+            cw_params = {"used_tokens": used_tokens, "max_tokens": context_window}
+            self.update_tab_params(cw_record.id, cw_params)
+            cw_interface = self.refresh_interface(cw_record.id)
+            if cw_interface:
+                if sections:
+                    sections.append("")
+                cw_index = len(other_records) + 1
+                cw_text = _format_section(
+                    AgentOpenAppRecord(
+                        id=cw_record.id,
+                        agent_id=cw_record.agent_id,
+                        app_id=cw_record.app_id,
+                        interface_text=cw_interface,
+                        is_persistent=cw_record.is_persistent,
+                    ),
+                    cw_index,
+                )
+                sections.append(cw_text)
 
         return "\n".join(sections)
 

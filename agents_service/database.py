@@ -42,6 +42,12 @@ class AgentManager:
             )
         except Exception:
             logger.info("Column max_past_actions already exists or could not be added", exc_info=True)
+        try:
+            self._svc.execute(
+                "ALTER TABLE agents ADD COLUMN show_context_window INTEGER DEFAULT 0"
+            )
+        except Exception:
+            logger.info("Column show_context_window already exists or could not be added", exc_info=True)
 
     def _ensure_unique_id(self) -> str:
         for _ in range(100):
@@ -60,14 +66,15 @@ class AgentManager:
         model_ref: Optional[str] = None,
         backup_model_ref: Optional[str] = None,
         max_past_actions: int = 15,
+        show_context_window: bool = True,
     ) -> AgentRecord:
         agent_id = self._ensure_unique_id()
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._svc.execute(
             """INSERT INTO agents
-                (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, now, now),
+                (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, show_context_window, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, int(show_context_window), now, now),
         )
         row = self._svc.query_one("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
         return self._row_to_record(row)
@@ -92,6 +99,7 @@ class AgentManager:
         model_ref: Optional[str] = None,
         backup_model_ref: Optional[str] = None,
         max_past_actions: Optional[int] = None,
+        show_context_window: Optional[bool] = None,
     ) -> Optional[AgentRecord]:
         existing = self.get_agent(agent_id)
         if existing is None:
@@ -104,9 +112,12 @@ class AgentManager:
                 model_ref = COALESCE(?, model_ref),
                 backup_model_ref = COALESCE(?, backup_model_ref),
                 max_past_actions = COALESCE(?, max_past_actions),
+                show_context_window = COALESCE(?, show_context_window),
                 updated_at = ?
              WHERE agent_id = ?""",
-            (name, context_window, model_ref, backup_model_ref, max_past_actions, now, agent_id),
+            (name, context_window, model_ref, backup_model_ref, max_past_actions,
+             int(show_context_window) if show_context_window is not None else None,
+             now, agent_id),
         )
         return self.get_agent(agent_id)
 
@@ -122,6 +133,10 @@ class AgentManager:
             mpa = row["max_past_actions"] or 15
         except (IndexError, KeyError, TypeError):
             mpa = 15
+        try:
+            scw = bool(row["show_context_window"])
+        except (IndexError, KeyError, TypeError):
+            scw = False
         return AgentRecord(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -130,6 +145,7 @@ class AgentManager:
             model_ref=row["model_ref"],
             backup_model_ref=row["backup_model_ref"],
             max_past_actions=mpa,
+            show_context_window=scw,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

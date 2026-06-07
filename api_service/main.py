@@ -29,6 +29,7 @@ def create_app(use_encryption: bool = False):
     from agents_service import AgentManager
     from apps_service import AppRegistry, AgentAppManager
     from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, PastActionsService
+    from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
     from api_service.database import ApiConfigManager
@@ -70,6 +71,7 @@ def create_app(use_encryption: bool = False):
         app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
         app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
         app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(app.state.past_actions_svc))
+        app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
         app.state.app_tab_mgr = app_tab_mgr
 
         app.state.time_svc = TimeService(svc=config_mgr._svc)

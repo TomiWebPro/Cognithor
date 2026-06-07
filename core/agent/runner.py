@@ -40,6 +40,8 @@ class AgentRunner:
         ctx = self.app_tab_mgr.get_agent_context(
             agent_id,
             max_past_actions=agent.max_past_actions or 15,
+            show_context_window=agent.show_context_window,
+            context_window=agent.context_window or 4096,
         )
 
         agent_info = json.dumps({

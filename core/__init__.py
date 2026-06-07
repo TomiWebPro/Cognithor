@@ -2,6 +2,7 @@ from core.app.app_manager import AppHandler, AppTabManager, AgentOpenAppRecord
 from core.app import ListAppsHandler
 from core.time import TimeService, TimeConfig
 from core.past_action import PastActionsService, PastActionRecord, PastActionsHandler
+from core.context_window import ContextWindowHandler
 from core.agent import AgentRunner
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "PastActionsService",
     "PastActionRecord",
     "PastActionsHandler",
+    "ContextWindowHandler",
     "AgentRunner",
 ]

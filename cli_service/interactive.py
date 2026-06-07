@@ -340,9 +340,10 @@ def cmd_agents_menu() -> None:
             for a in agents:
                 primary = a.model_ref or "-"
                 backup = a.backup_model_ref or "-"
-                rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), primary, backup])
+                cw_flag = "CW" if a.show_context_window else ""
+                rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), cw_flag, primary, backup])
             print_table(
-                ["ID", "Name", "Context Window", "Past Actions", "Model Ref", "Backup Ref"],
+                ["ID", "Name", "Context Window", "Past Actions", "CW Tab", "Model Ref", "Backup Ref"],
                 rows,
             )
         else:
@@ -354,17 +355,18 @@ def cmd_agents_menu() -> None:
                 "Add agent",
                 "Edit context window",
                 "Edit past actions limit",
+                "Toggle context window tab",
                 "Link primary model",
                 "Link backup model",
                 "Delete agent",
                 "Back to main menu",
             ],
             title="Select an action",
-            default=6,
+            default=7,
             hint="Manage autonomous agents",
         )
 
-        if choice == 6:
+        if choice == 7:
             return
 
         if choice == 0:
@@ -441,6 +443,20 @@ def cmd_agents_menu() -> None:
                 print_warning("No agents")
                 pause()
                 continue
+            alist = [f"{a.agent_id} — {a.name} (tab={'ON' if a.show_context_window else 'OFF'})" for a in agents]
+            aidx = choose(alist, title="Select agent to toggle context window tab")
+            agent = agents[aidx]
+            new_val = not agent.show_context_window
+            agent_mgr.update_agent(agent.agent_id, show_context_window=new_val)
+            status = "ON" if new_val else "OFF"
+            print_success(f"Context window tab for '{agent.name}' → {status}")
+
+        elif choice == 4:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
             alist = [f"{a.agent_id} — {a.name}" for a in agents]
             aidx = choose(alist, title="Select agent to link primary model")
             agent = agents[aidx]
@@ -450,7 +466,7 @@ def cmd_agents_menu() -> None:
             agent_mgr.update_agent(agent.agent_id, model_ref=ref)
             print_success(f"Linked {agent.agent_id} primary → {ref}")
 
-        elif choice == 4:
+        elif choice == 5:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")
@@ -465,7 +481,7 @@ def cmd_agents_menu() -> None:
             agent_mgr.update_agent(agent.agent_id, backup_model_ref=ref)
             print_success(f"Linked {agent.agent_id} backup → {ref}")
 
-        elif choice == 5:
+        elif choice == 6:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")
