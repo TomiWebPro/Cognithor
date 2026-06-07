@@ -1,7 +1,7 @@
-from core.app_manager import AppHandler, AppTabManager, AgentOpenAppRecord
+from core.app.app_manager import AppHandler, AppTabManager, AgentOpenAppRecord
 from core.app import ListAppsHandler
 from core.time import TimeService, TimeConfig
-from core.past_actions import PastActionsService, PastActionRecord
+from core.past_action import PastActionsService, PastActionRecord, PastActionsHandler
 from core.agent import AgentRunner
 
 __all__ = [
@@ -13,5 +13,6 @@ __all__ = [
     "TimeConfig",
     "PastActionsService",
     "PastActionRecord",
+    "PastActionsHandler",
     "AgentRunner",
 ]

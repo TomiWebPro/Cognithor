@@ -60,7 +60,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     from api_service.database import ApiConfigManager
     from agents_service.database import AgentManager
     from apps_service.database import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsService, TimeService
+    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService
     from apps.list_directory.handler import ListDirectoryHandler
 
     log_db = LogDatabase(
@@ -91,12 +91,14 @@ def _init_services(use_encryption: bool = False) -> dict:
     app_registry.scan_apps_directory(str(APPS_DIR))
     agent_app_mgr = AgentAppManager(svc=svc)
 
+    past_actions_svc = PastActionsService(svc=svc)
+
     app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry)
     app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
+    app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(past_actions_svc))
 
     time_svc = TimeService(svc=svc)
-    past_actions_svc = PastActionsService(svc=svc)
 
     return {
         "svc": svc,
@@ -117,12 +119,10 @@ def _oj(data: dict, indent: Optional[int] = None) -> str:
 def _context(
     agent_id: str,
     app_tab_mgr,
-    past_actions_svc=None,
     max_past_actions=15,
 ) -> str:
     return app_tab_mgr.get_agent_context(
         agent_id,
-        past_actions_svc=past_actions_svc,
         max_past_actions=max_past_actions,
     )
 
@@ -165,6 +165,26 @@ def _handle_close(args: dict, services: dict, agent_id: str) -> Optional[dict]:
         return {"error": str(e)}
 
 
+def _process_tab_operations(result: dict, services: dict, agent_id: str) -> None:
+    app_tab_mgr = services["app_tab_mgr"]
+    for tab_spec in result.get("_open_tabs", []):
+        app_tab_mgr.open_app(
+            agent_id=agent_id,
+            app_id=tab_spec.get("app_id", ""),
+            tab_label=tab_spec.get("tab_label"),
+            params=tab_spec.get("params"),
+        )
+    for tab_spec in result.get("_update_tabs", []):
+        existing = app_tab_mgr._find_tab_by_app_and_label(
+            agent_id,
+            tab_spec.get("app_id", ""),
+            tab_spec.get("tab_label", ""),
+        )
+        if existing is not None:
+            app_tab_mgr.update_tab_params(existing.id, tab_spec.get("params", {}))
+            app_tab_mgr.refresh_interface(existing.id)
+
+
 def _handle_input(
     content: str,
     services: dict,
@@ -177,13 +197,11 @@ def _handle_input(
         parsed = {"raw": content}
 
     app_tab_mgr = services["app_tab_mgr"]
-    past_actions_svc = services.get("past_actions_svc")
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
 
     app_tab_mgr.refresh_interfaces(agent_id)
     ctx = _context(
         agent_id, app_tab_mgr,
-        past_actions_svc=past_actions_svc,
         max_past_actions=max_pa,
     )
 
@@ -241,14 +259,12 @@ def _dispatch(
     if not raw:
         return results
 
-    past_actions_svc = services.get("past_actions_svc")
     time_svc = services.get("time_svc")
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
 
     def _ctx() -> str:
         return _context(
             agent_id, services["app_tab_mgr"],
-            past_actions_svc=past_actions_svc,
             max_past_actions=max_pa,
         )
 
@@ -352,6 +368,29 @@ def _dispatch(
                 past_actions_svc.record_action(
                     agent_id, "assistant", json.dumps({"apps": data}), time_svc=time_svc,
                 )
+        elif command in ("execute", "run"):
+            app_id = item.get("app_id", "")
+            action = item.get("action", item.get("params", {}))
+            handler = services["app_tab_mgr"]._handlers.get(app_id)
+            if handler is None:
+                err = {"error": f"No handler registered for app: {app_id}"}
+                results.append({"type": "error", "data": err})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(err), app_id=app_id,
+                        time_svc=time_svc,
+                    )
+            else:
+                result = handler.execute(action if isinstance(action, dict) else {})
+                results.append({"type": "result", "command": "execute", "data": result, "app_id": app_id})
+                _process_tab_operations(result, services, agent_id)
+                if past_actions_svc:
+                    summary = result.get("past_action_summary")
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(result),
+                        app_id=app_id, summary=summary, time_svc=time_svc,
+                    )
+                results.append({"type": "context", "content": _ctx()})
         elif command in ("help",):
             help_data = {
                 "open": {"usage": '{"command": "open", "app_id": "...", "tab_label": "...", "params": {...}}', "description": "Open an app tab"},
@@ -359,6 +398,7 @@ def _dispatch(
                 "context": {"usage": '{"command": "context"}', "description": "Show current context window"},
                 "tabs": {"usage": '{"command": "tabs"}', "description": "List open tabs"},
                 "apps": {"usage": '{"command": "apps"}', "description": "List available apps"},
+                "execute": {"usage": '{"command": "execute", "app_id": "...", "action": {...}}', "description": "Execute an action on an app"},
                 "help": {"usage": '{"command": "help"}', "description": "Show this help"},
                 "quit": {"usage": '{"command": "quit"}', "description": "Exit simulator"},
                 "input": {"usage": '{"input": "..."} or plain text', "description": "Simulate agent receiving input"},
@@ -432,11 +472,9 @@ def simulation_main() -> None:
     print(f"Selected: {agent.name} ({agent_id})")
     print()
 
-    past_actions_svc = services.get("past_actions_svc")
     max_pa = agent.max_past_actions if hasattr(agent, "max_past_actions") else 15
     ctx = _context(
         agent_id, app_tab_mgr,
-        past_actions_svc=past_actions_svc,
         max_past_actions=max_pa,
     )
     agent_info = _oj({

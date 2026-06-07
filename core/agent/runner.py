@@ -5,8 +5,8 @@ import logging
 from typing import Optional
 
 from agents_service import AgentManager, parse_model_ref
-from core.app_manager import AppTabManager
-from core.past_actions import PastActionsService
+from core.app.app_manager import AppTabManager
+from core.past_action.past_actions import PastActionsService
 from endpoint import EndpointManager, Message
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,6 @@ class AgentRunner:
         self.app_tab_mgr.refresh_interfaces(agent_id)
         ctx = self.app_tab_mgr.get_agent_context(
             agent_id,
-            past_actions_svc=self.past_actions_svc,
             max_past_actions=agent.max_past_actions or 15,
         )
 

@@ -517,15 +517,16 @@ def cmd_apps_menu() -> None:
                 "Uninstall app from an agent",
                 "Toggle enable/disable for an agent",
                 "List apps installed for an agent",
+                "Toggle tab persistence",
                 "Rescan apps directory",
                 "Back to main menu",
             ],
             title="Select an action",
-            default=5,
+            default=6,
             hint="Manage agent applications and tools",
         )
 
-        if choice == 6:
+        if choice == 7:
             return
 
         if choice == 0:
@@ -689,6 +690,42 @@ def cmd_apps_menu() -> None:
             pause()
 
         elif choice == 5:
+            if not agents:
+                print_warning("No agents created yet.")
+                pause()
+                continue
+
+            glist = [f"{g.agent_id} — {g.name}" for g in agents]
+            gidx = choose(glist, title="Select agent to manage tabs")
+            agent = agents[gidx]
+
+            app_tab_mgr = CONFIG.get("app_tab_mgr")
+            if app_tab_mgr is None:
+                print_warning("Tab manager not available in this context")
+                pause()
+                continue
+
+            tabs = app_tab_mgr.list_open_apps(agent.agent_id)
+            if not tabs:
+                print_warning(f"No open tabs for '{agent.name}'")
+                pause()
+                continue
+
+            tlist = [
+                f"{'📌' if t.is_persistent else '  '} {t.app_id} ({t.tab_label or 'no label'})"
+                for t in tabs
+            ]
+            tidx = choose(tlist, title=f"Select tab to toggle persistence for '{agent.name}'")
+            target = tabs[tidx]
+
+            new_val = not target.is_persistent
+            app_tab_mgr.set_tab_persistence(target.id, new_val)
+            app_tab_mgr.refresh_interface(target.id)
+            status = "persistent" if new_val else "closable"
+            print_success(f"Tab '{target.app_id}' is now {status}")
+            pause()
+
+        elif choice == 6:
             count = len(app_registry.scan_apps_directory(str(APPS_DIR)))
             print_success(f"Rescanned apps directory. Found {count} apps.")
             pause()

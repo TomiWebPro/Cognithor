@@ -1,122 +1,199 @@
-# Core Module Explanation
+# Core Module — Architecture & Vision
 
-The `core` package provides the runtime services that drive agent conversations: context window management, configurable time progression, and past-action tracking for memory.
+The `core` package provides the runtime services that drive agent conversations: context window management, open-app tab system, past-action tracking with structured summaries, and configurable time progression.
 
-The package is split across four service files plus system app handlers:
+The goal is a **tab-based context workspace** that the agent manages like a human manages browser tabs — each app opens a tab, user/agent actions are tracked as structured past actions, and apps can create or update tabs as part of their execution lifecycle.
 
-## File: core/app_manager.py
+---
 
-Defines the context window management layer — how tabs are opened, closed, and assembled into a single context string that the agent sees.
+## Directory Structure
 
-**`AppHandler`**: Abstract base class for app tab handlers. Subclasses must implement:
-- `generate_interface(params, tab_label)` — Returns a string describing the app's current state for the context window.
-- `execute(params)` — Runs the app's core action and returns a result dict.
+```
+core/
+  __init__.py                   Re-exports all public symbols
+  app/
+    __init__.py
+    app_manager.py              AppHandler, AppTabManager, AgentOpenAppRecord
+    list_apps.py                ListAppsHandler (system persistent tab)
+  past_action/
+    __init__.py
+    past_actions.py             PastActionsService, PastActionRecord
+    handler.py                  PastActionsHandler (system persistent tab)
+  agent/
+    __init__.py
+    runner.py                   AgentRunner — production agent loop
+  time/
+    __init__.py
+    time_service.py             TimeService, TimeConfig
+```
 
-**`AgentOpenAppRecord`**: Dataclass mirroring the `agent_open_apps` table. Each row is a single open tab for an agent:
-- `id`: 6-char unique tab ID (e.g. `"a1b2c3"`)
-- `agent_id`: Which agent owns this tab
-- `app_id`: Which app this tab represents (or `"__system__"` for system tabs)
-- `tab_label`: Optional user-facing label
-- `params`: JSON string of parameters the app was opened with
-- `interface_text`: The rendered display text shown in context
-- `is_persistent`: If True, the tab cannot be closed (e.g. `__list_apps__`)
-- `opened_at` / `updated_at`: Timestamps
+---
 
-**`AppTabManager`**: The central class that manages open tabs and context assembly.
+## The Tab System (`app/app_manager.py`)
 
-Key methods:
-- `open_app(agent_id, app_id, tab_label, params, is_persistent)` — Opens a new tab. Generates a unique ID, calls the app handler's `generate_interface()`, persists to DB. Returns `(tab_id, interface_text)`.
-- `close_tab(tab_id)` — Closes a non-persistent tab. Raises `ValueError` if persistent.
-- `close_tabs_by_app(agent_id, app_id)` — Closes all non-persistent tabs for a given app.
-- `close_all_tabs(agent_id)` — Closes all non-persistent tabs.
-- `list_open_apps(agent_id)` — Returns all open tabs ordered by opened_at.
-- `get_open_app(tab_id)` — Returns a single tab by ID.
-- `ensure_persistent_tabs(agent_id)` — Creates or upgrades the `__list_apps__` system tab.
-- `refresh_interface(tab_id)` — Re-generates interface text for a single tab.
-- `refresh_interfaces(agent_id)` — Re-generates interface for all tabs of an agent.
-- `get_agent_context(agent_id, past_actions_svc, max_past_actions)` — Assembles the complete context window. Returns a string with all tabs numbered `[tab 1]`, `[tab 2]`, etc. If a `PastActionsService` is provided, past actions are prepended as a `[tab 1]` section.
-- `register_handler(app_id, handler)` — Registers an `AppHandler` subclass for a given `app_id` (called at startup for built-in apps like `list_directory` and `__list_apps__`).
+### AppHandler — abstract base for all app tabs
 
-**Context assembly flow** (`get_agent_context`):
-1. Ensure persistent tabs exist (`__list_apps__`).
+```python
+class AppHandler:
+    def generate_interface(self, params: dict, tab_label: str | None = None) -> str: ...
+    def execute(self, params: dict) -> dict: ...
+    def get_action_summary(self, params: dict, result: dict) -> str | None:
+        return result.get("past_action_summary")
+```
+
+Every app that wants to appear as a tab registers an `AppHandler`. The handler controls what the agent sees (`generate_interface`) and what happens when the agent sends an action (`execute`).
+
+`get_action_summary()` lets the app provide a human-readable string describing what `execute()` did. This feeds into the Past Actions tab so the agent sees clean summaries like `"Edited lines 345-432 in main.py"` instead of raw JSON.
+
+### AppTabManager — tab lifecycle
+
+| Method | Purpose |
+|--------|---------|
+| `open_app(agent_id, app_id, tab_label, params, is_persistent)` | Create a new tab → returns `(tab_id, interface_text)` |
+| `close_tab(tab_id)` | Close a non-persistent tab |
+| `close_tabs_by_app(agent_id, app_id)` | Close all non-persistent tabs for an app |
+| `close_all_tabs(agent_id)` | Close all non-persistent tabs |
+| `list_open_apps(agent_id)` | List tabs ordered by opened_at |
+| `get_open_app(tab_id)` | Get a single tab by ID |
+| `update_tab_params(tab_id, params)` | Update stored params of a tab → re-rendered on next refresh |
+| `refresh_interface(tab_id)` | Re-generate interface text |
+| `refresh_interfaces(agent_id)` | Re-generate all tab interfaces |
+| `ensure_persistent_tabs(agent_id, max_past_actions)` | Auto-open system persistent tabs |
+| `get_agent_context(agent_id, max_past_actions)` | Assemble the full context window string |
+| `set_tab_persistence(tab_id, persistent)` | Toggle whether a tab can be closed |
+| `register_handler(app_id, handler)` | Register an AppHandler for an app ID |
+
+### Context Assembly Flow (`get_agent_context`)
+
+1. Ensure persistent system tabs exist (`__list_apps__`, `__past_actions__`).
 2. Refresh all tab interfaces.
-3. If `past_actions_svc` is provided and has entries, prepend `[tab 1] [Past Actions]` section.
-4. Number remaining open tabs starting from the next available number.
+3. Iterate tabs in order, numbering them `[tab 1]`, `[tab 2]`, etc.
+4. For each tab, if `is_persistent=True`, auto-append `"  (persistent tab)"` — no hardcoded text in handlers.
 5. Return concatenated string.
 
-Handler registration happens at application startup:
-- `api_service/main.py` — registers `list_directory` and `__list_apps__` handlers.
-- `sim_agent_service/simulator.py` — same registration for simulator mode.
+### Persistence Toggle
+
+Any tab's persistence can be toggled:
+- **API**: `PATCH /tabs/{tab_id}/persist` with `{"persistent": true/false}`
+- **CLI**: Apps menu → "Toggle tab persistence"
+- **Programmatic**: `app_tab_mgr.set_tab_persistence(tab_id, bool)`
+
+Persistent tabs cannot be closed (raises `ValueError`).
 
 ---
 
-## File: core/app/list_apps.py
+## The Past Actions System (`past_action/past_actions.py`)
 
-**`ListAppsHandler`**: A system `AppHandler` that shows the available apps in the context window. It is registered as a persistent tab (`__list_apps__`) that cannot be closed.
+### PastActionRecord — structured history
 
-The `generate_interface()` method:
-1. Lists all available apps from `AppRegistry`.
-2. Formats each app with its `app_id`, `name`, description, and an `{open_app:"..."}` invocation hint.
-3. Returns the formatted text for display in the context window.
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | int | Auto-increment PK |
+| `agent_id` | str | FK to agents |
+| `role` | str | `"user"`, `"assistant"`, `"system"`, `"agent"` |
+| `content` | str | Full JSON payload (preserved for replay/debug) |
+| `app_id` | str or None | Which app produced this action |
+| `summary` | str or None | Human-readable summary from the app |
+| `created_at` | str | UTC timestamp |
+| `bot_timestamp` | str | Agent-local time from TimeService |
 
-The `execute()` method returns a success response with the app count.
+### How recording works
+
+```python
+# Legacy — raw content
+pas.record_action(agent_id, "user", '{"command": "read", "path": "main.py"}')
+
+# Structured — with app context
+pas.record_action(agent_id, "assistant", '{"success": true, ...}',
+                  app_id="read_from_file",
+                  summary="Read main.py (145 lines)")
+```
+
+### Tab rendering
+
+The past actions tab renders using `summary` if available, falling back to `content`. If `app_id` is set, it shows as a prefix:
+
+```
+YOU: read file main.py
+HARNESS [read_from_file]: Read main.py (145 lines)
+HARNESS [edit]: Edited lines 345-432 in main.py
+```
 
 ---
 
-## File: core/time/time_service.py
+## The `_open_tabs` / `_update_tabs` Contract
 
-**`TimeService`**: Configurable time progression that maps a real-world epoch to an agent-world epoch with a speed ratio.
+When an app's `execute()` returns a result dict, it can include instructions for the tab system:
 
-**`TimeConfig`**: Dataclass holding the three configuration values:
-- `real_epoch`: ISO datetime — the real-world moment that corresponds to...
-- `agent_epoch`: ISO datetime — ...this agent-world moment.
-- `ratio`: Float multiplier — how many agent-seconds pass per real second.
+```python
+{
+    "success": True,
+    "past_action_summary": "Listed 42 entries in /home",
+    "_open_tabs": [
+        {"app_id": "list_directory", "tab_label": "/home", "params": {"entries": [...]}}
+    ],
+    "_update_tabs": [
+        {"app_id": "list_directory", "tab_label": "/home", "params": {"entries": [...]}}
+    ],
+}
+```
 
-Example: `real_epoch = 1999-05-21`, `agent_epoch = 2024-06-15`, `ratio = 3.0` means that at real time 2026-06-06, the agent's clock shows approximately 2032-09-XX (27 real years × 3 = 81 agent years after 2024).
+The dispatch layer (in `sim_agent_service/simulator.py` and future agent runners) processes these:
 
-Time data is stored in the `time_config` key-value table in `cognithor.db` and persists across restarts.
+1. `_open_tabs` → calls `app_tab_mgr.open_app()` to create new content tabs
+2. `_update_tabs` → finds existing tab by `app_id` + `tab_label`, updates its params, refreshes interface
 
-Key methods:
-- `get_config()` — Returns the current `TimeConfig`.
-- `set_config(real_epoch, agent_epoch, ratio)` — Updates one or more config values.
-- `now()` — Returns the current agent time as a `datetime.datetime`.
-- `now_timestamp()` — Returns the current agent time as a Unix timestamp.
+This is how an agent's workflow works in practice:
+
+```
+Tab 3: [read_from_file] — shows "Commands: read <path>"
+Agent sends: {"command": "execute", "app_id": "read_from_file", "action": {"path": "main.py"}}
+
+ReadFileHandler.execute() returns:
+  { success: true, _open_tabs: [{app_id: "read_from_file", tab_label: "main.py",
+     params: {lines: [...], path: "main.py"}}],
+     past_action_summary: "Read main.py (145 lines)" }
+
+Tab 3: [read_from_file] — still shows commands
+Tab 4: [main.py] — shows file content line by line ← NEW TAB
+
+Agent sends: {"command": "execute", "app_id": "edit", "action": {"path": "main.py", "lines": "345-432"}}
+
+EditHandler.execute() returns:
+  { success: true, _update_tabs: [{app_id: "read_from_file", tab_label: "main.py",
+     params: {lines: [edited...], path: "main.py"}}],
+     past_action_summary: "Edited lines 345-432 in main.py" }
+
+Tab 4: [main.py] — now shows EDITED content ← UPDATED
+
+Agent closes tab: Tab 4 gone.
+```
+
+The key principle: **core provides the mechanism, apps own their display**. No core-level handler per content type exists. Each app's `generate_interface()` decides what its tab looks like, and each app's `execute()` decides what tabs to create or update.
 
 ---
 
-## File: core/past_actions.py
+## System Persistent Tabs
 
-**`PastActionsService`**: Tracks a rolling window of past interactions (user inputs and system responses). Past actions are stored in the `past_actions` table in `cognithor.db` and persist across restarts.
+Two tabs are always open and cannot be closed:
 
-**`PastActionRecord`**: Dataclass mirroring the `past_actions` table:
-- `id`: Auto-increment primary key
-- `agent_id`: Which agent this action belongs to
-- `role`: `"user"`, `"assistant"`, `"system"`, or `"agent"`
-- `content`: The action content (raw text or JSON)
-- `created_at`: UTC timestamp when recorded
-- `bot_timestamp`: Agent-local time (from `TimeService.now()`) when recorded
+| App ID | Handler | Purpose |
+|--------|---------|---------|
+| `__list_apps__` | `ListAppsHandler` | Lists available apps with `{open_app:"..."}` commands |
+| `__past_actions__` | `PastActionsHandler` | Shows recent action history with summaries |
 
-Key methods:
-- `record_action(agent_id, role, content, time_svc)` — Inserts a new action. If `time_svc` is provided, the agent's current time is stored as `bot_timestamp`.
-- `trim_actions(agent_id, max_count)` — Deletes the oldest actions for an agent until only `max_count` remain. Called after each batch of recordings.
-- `get_recent_actions(agent_id, max_count)` — Returns the most recent `max_count` actions (oldest first).
-- `count_actions(agent_id)` — Total actions stored for an agent.
-- `clear_actions(agent_id)` — Deletes all actions for an agent.
-- `generate_tab_interface(agent_id, max_count)` — Produces a formatted tab string for the context window. Returns `None` if no actions exist. Each action is shown as:
-  ```
-  [2024-06-15 14:30:00] USER: {"command": "open", ...}
-  [2024-06-15 14:30:01] ASSISTANT: {"tab_id": "abc123", "status": "opened"}
-  ```
-  Parseable JSON content is pretty-printed with 2-space indent for readability.
+Opened automatically by `ensure_persistent_tabs()`, configured via `AppTabManager._SYSTEM_PERSISTENT_APPS`.
 
-The `max_past_actions` limit (default 15) is stored per-agent in the `agents.max_past_actions` column. It can be changed:
-- Via the CLI (`Agent Management > Edit past actions limit`)
-- Via the API (`PUT /agents/{agent_id}`)
-- Programmatically through `AgentManager.update_agent()`
+---
 
-In the simulator (`-s` mode), every interaction is recorded as a past action — including malformed input, unknown commands, open/close operations, and plain-text messages. After each batch, `trim_actions()` keeps the total under the agent's configured limit.
+## Agent Runner (`agent/runner.py`)
 
-**Important ordering rule**: When a command both records an assistant action AND refreshes the context window (e.g. `open`, `close`), the `record_action()` call **must** happen **before** `get_agent_context()` / `_ctx()`. This ensures the just-recorded assistant response is included in the Past Actions section of the refreshed context. Violating this order causes the agent to see stale past actions that end with its own input but lack the system's response.
+The production `AgentRunner`:
+1. Builds context window via `app_tab_mgr.get_agent_context(agent_id)`
+2. Sends context + system prompt to the LLM endpoint
+3. Records the assistant response as a past action
+
+It does NOT parse agent responses for commands (that's the simulator layer). For production, command parsing and `_open_tabs`/`_update_tabs` processing belong in a higher-level agent loop.
 
 ---
 
@@ -125,36 +202,37 @@ In the simulator (`-s` mode), every interaction is recorded as a past action —
 ```
  CLI / API / Simulator
        │
-       ├── AppTabManager (app_manager.py)
+       ├── AppTabManager (app/app_manager.py)
        │       │
-       │       ├── open_app() / close_tab()  →  agent_open_apps table
-       │       ├── get_agent_context()       →  builds the context string
-       │       │       │
-       │       │       ├── [tab 1] Past Actions    ← PastActionsService.generate_tab_interface()
-       │       │       ├── [tab 2] Available Apps  ← ListAppsHandler (persistent)
-       │       │       └── [tab 3..N] Other tabs   ← registered AppHandlers
-       │       │
-       │       └── register_handler(app_id, handler)
+       │       ├── open_app() / close_tab()     →  agent_open_apps table
+       │       ├── get_agent_context()          →  builds context string
+       │       ├── update_tab_params()          →  update tab content
+       │       └── _find_tab_by_app_and_label() →  update existing tabs
        │
-       ├── PastActionsService (past_actions.py)
+       ├── PastActionsService (past_action/past_actions.py)
        │       │
-       │       ├── record_action()  →  past_actions table
-       │       ├── generate_tab_interface()  →  formatted string for context
-       │       └── trim_actions()  →  enforces max_past_actions limit
+       │       ├── record_action(agent_id, role, content, app_id, summary)
+       │       ├── generate_tab_interface()     →  renders with app_id/summary
+       │       └── trim_actions()               →  enforces max_past_actions
        │
-       └── TimeService (time/time_service.py)
+       ├── PastActionsHandler (past_action/handler.py)
+       │       └── wraps above as a persistent tab
+       │
+       ├── ListAppsHandler (app/list_apps.py)
+       │       └── persistent tab listing available apps
+       │
+       └── AppHandler.execute() contract
                │
-               ├── now()  →  agent-local datetime
-               └── PastActionsService uses this to timestamp actions
+               ├── past_action_summary  →  clean entry in Past Actions tab
+               ├── _open_tabs           →  creates new content tabs
+               └── _update_tabs         →  updates existing content tabs
 ```
-
-All services share the same `SecureDbService` instance, operating on the same `cognithor.db` file.
 
 ---
 
 ## Database Tables
 
-**`agent_open_apps` table** — Open tabs (managed by `AppTabManager`):
+**`agent_open_apps`** — Open tabs:
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | TEXT PK | 6-char unique tab ID |
@@ -163,82 +241,31 @@ All services share the same `SecureDbService` instance, operating on the same `c
 | `tab_label` | TEXT | Optional user label |
 | `params` | TEXT JSON | App parameters |
 | `interface_text` | TEXT | Cached rendered display |
-| `is_persistent` | INTEGER | 1 = cannot be closed (default 0) |
+| `is_persistent` | INTEGER | 1 = cannot be closed |
 | `opened_at` / `updated_at` | TEXT | Timestamps |
 
-**`time_config` table** — Time service config (managed by `TimeService`):
-| Column | Type | Description |
-|--------|------|-------------|
-| `key` | TEXT PK | Config key (e.g. `"real_epoch"`) |
-| `value` | TEXT | Config value (ISO datetime or float string) |
-
-**`past_actions` table** — Action history (managed by `PastActionsService`):
+**`past_actions`** — Structured action history:
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER PK | Auto-increment |
 | `agent_id` | TEXT NOT NULL | FK to agents |
 | `role` | TEXT NOT NULL | `"user"`, `"assistant"`, `"system"`, `"agent"` |
-| `content` | TEXT NOT NULL | Full action content |
-| `created_at` | TEXT | UTC timestamp (auto-set) |
-| `bot_timestamp` | TEXT | Agent-local time (from TimeService) |
+| `content` | TEXT NOT NULL | Full payload (preserved) |
+| `app_id` | TEXT | Which app produced this |
+| `summary` | TEXT | Human-readable summary |
+| `created_at` | TEXT | UTC timestamp |
+| `bot_timestamp` | TEXT | Agent-local time |
 
 ---
 
-## Usage Example
+## Design Principles (Don't Lose These)
 
-```python
-from core import AppTabManager, PastActionsService, TimeService
+1. **Core provides mechanism, not content.** No core-level handler per content type. `AppHandler` and the `_open_tabs`/`_update_tabs` contract are generic — apps decide what to display and when to create tabs.
 
-# Initialize with shared SecureDbService
-app_tab_mgr = AppTabManager(svc=svc, app_registry=registry)
-time_svc = TimeService(svc=svc)
-past_actions_svc = PastActionsService(svc=svc)
+2. **Past actions are structured, not flat.** `app_id` + `summary` separate human-readable display from machine-readable payload. The tab renders summaries, preserving JSON for debugging.
 
-# Record an interaction
-past_actions_svc.record_action(
-    agent_id="abc123",
-    role="user",
-    content='{"open_app": "list_directory"}',
-    time_svc=time_svc,
-)
-past_actions_svc.record_action(
-    agent_id="abc123",
-    role="assistant",
-    content='{"tab_id": "xyz789", "status": "opened"}',
-    time_svc=time_svc,
-)
-past_actions_svc.trim_actions("abc123", max_count=15)
+3. **Persistence comes from DB, not from code.** The `"(persistent tab)"` label is auto-appended by context builder based on `is_persistent` column. Handlers never hardcode it.
 
-# Build the full context window
-agent = agent_mgr.get_agent("abc123")
-ctx = app_tab_mgr.get_agent_context(
-    "abc123",
-    past_actions_svc=past_actions_svc,
-    max_past_actions=agent.max_past_actions,
-)
-print(ctx)
-# [tab 1] [Past Actions]
-#   Status: Open
-#
-#   [2024-06-15 14:30:00] USER: {"open_app": "list_directory"}
-#   [2024-06-15 14:30:01] ASSISTANT: {"tab_id": "xyz789", "status": "opened"}
-#
-# [tab 2] [Available Apps] (Available Apps)
-#   ...
-```
+4. **Tabs are the agent's workspace.** Like browser tabs: tool tabs show commands, content tabs show results, the agent opens/closes/updates them as it works.
 
----
-
-## Adding a New System App Handler
-
-To add a new system tab (like `__list_apps__`):
-
-1. Create a handler class extending `AppHandler` with `generate_interface()` and `execute()`.
-2. Register it at startup:
-```python
-app_tab_mgr.register_handler("my_system_app", MyHandler())
-```
-3. Open it as a persistent tab:
-```python
-app_tab_mgr.open_app(agent_id, "my_system_app", is_persistent=True)
-```
+5. **No special cases in dispatch.** Past actions are a tab like any other. The dispatch doesn't need to know about past actions — the handler encapsulates it.

@@ -17,6 +17,10 @@ def _get_agent_app_mgr(request: Request) -> AgentAppManager:
     return request.app.state.agent_app_mgr
 
 
+def _get_app_tab_mgr(request: Request):
+    return request.app.state.app_tab_mgr
+
+
 @router.get("/apps")
 async def list_apps(
     app_registry: AppRegistry = Depends(_get_app_registry),
@@ -244,3 +248,46 @@ async def set_app_config(
     if record is None:
         raise HTTPException(status_code=404, detail="App installation not found")
     return vars(record)
+
+
+@router.patch("/tabs/{tab_id}/persist")
+async def toggle_tab_persistence(
+    tab_id: str,
+    payload: dict,
+    app_tab_mgr = Depends(_get_app_tab_mgr),
+    _: str = Depends(get_current_user),
+):
+    record = app_tab_mgr.get_open_app(tab_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Tab not found")
+    persistent = payload.get("persistent", True)
+    app_tab_mgr.set_tab_persistence(tab_id, bool(persistent))
+    app_tab_mgr.refresh_interface(tab_id)
+    return {"tab_id": tab_id, "is_persistent": bool(persistent)}
+
+
+@router.get("/tabs")
+async def list_tabs(
+    request: Request,
+    _: str = Depends(get_current_user),
+):
+    app_tab_mgr = _get_app_tab_mgr(request)
+    return {"message": "Specify an agent_id query parameter to list tabs"}
+
+
+@router.get("/agents/{agent_id}/tabs")
+async def list_agent_tabs(
+    agent_id: str,
+    app_tab_mgr = Depends(_get_app_tab_mgr),
+    _: str = Depends(get_current_user),
+):
+    tabs = app_tab_mgr.list_open_apps(agent_id)
+    return [
+        {
+            "tab_id": t.id,
+            "app_id": t.app_id,
+            "tab_label": t.tab_label,
+            "is_persistent": t.is_persistent,
+        }
+        for t in tabs
+    ]

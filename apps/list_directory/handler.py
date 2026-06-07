@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-from core.app_manager import AppHandler
+from core.app.app_manager import AppHandler
 
 
 def _format_size(size: int) -> str:
