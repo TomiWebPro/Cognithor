@@ -48,6 +48,12 @@ class AgentManager:
             )
         except Exception:
             logger.info("Column show_context_window already exists or could not be added", exc_info=True)
+        try:
+            self._svc.execute(
+                "ALTER TABLE agents ADD COLUMN agent_can_change_max_past_actions INTEGER DEFAULT 0"
+            )
+        except Exception:
+            logger.info("Column agent_can_change_max_past_actions already exists or could not be added", exc_info=True)
 
     def _ensure_unique_id(self) -> str:
         for _ in range(100):
@@ -67,14 +73,16 @@ class AgentManager:
         backup_model_ref: Optional[str] = None,
         max_past_actions: int = 15,
         show_context_window: bool = True,
+        agent_can_change_max_past_actions: bool = False,
     ) -> AgentRecord:
+        max_past_actions = max(3, max_past_actions)
         agent_id = self._ensure_unique_id()
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._svc.execute(
             """INSERT INTO agents
-                (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, show_context_window, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, int(show_context_window), now, now),
+                (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, show_context_window, agent_can_change_max_past_actions, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, int(show_context_window), int(agent_can_change_max_past_actions), now, now),
         )
         row = self._svc.query_one("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
         return self._row_to_record(row)
@@ -100,10 +108,13 @@ class AgentManager:
         backup_model_ref: Optional[str] = None,
         max_past_actions: Optional[int] = None,
         show_context_window: Optional[bool] = None,
+        agent_can_change_max_past_actions: Optional[bool] = None,
     ) -> Optional[AgentRecord]:
         existing = self.get_agent(agent_id)
         if existing is None:
             return None
+        if max_past_actions is not None:
+            max_past_actions = max(3, max_past_actions)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._svc.execute(
             """UPDATE agents SET
@@ -113,10 +124,12 @@ class AgentManager:
                 backup_model_ref = COALESCE(?, backup_model_ref),
                 max_past_actions = COALESCE(?, max_past_actions),
                 show_context_window = COALESCE(?, show_context_window),
+                agent_can_change_max_past_actions = COALESCE(?, agent_can_change_max_past_actions),
                 updated_at = ?
              WHERE agent_id = ?""",
             (name, context_window, model_ref, backup_model_ref, max_past_actions,
              int(show_context_window) if show_context_window is not None else None,
+             int(agent_can_change_max_past_actions) if agent_can_change_max_past_actions is not None else None,
              now, agent_id),
         )
         return self.get_agent(agent_id)
@@ -137,6 +150,10 @@ class AgentManager:
             scw = bool(row["show_context_window"])
         except (IndexError, KeyError, TypeError):
             scw = False
+        try:
+            acc = bool(row["agent_can_change_max_past_actions"])
+        except (IndexError, KeyError, TypeError):
+            acc = False
         return AgentRecord(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -145,6 +162,7 @@ class AgentManager:
             model_ref=row["model_ref"],
             backup_model_ref=row["backup_model_ref"],
             max_past_actions=mpa,
+            agent_can_change_max_past_actions=acc,
             show_context_window=scw,
             created_at=row["created_at"],
             updated_at=row["updated_at"],

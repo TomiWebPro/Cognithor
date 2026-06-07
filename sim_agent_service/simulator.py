@@ -96,7 +96,7 @@ def _init_services(use_encryption: bool = False) -> dict:
 
     app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry)
     app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
-    app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry))
+    app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, agent_app_mgr))
     app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(past_actions_svc))
     app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
 
@@ -124,12 +124,14 @@ def _context(
     max_past_actions=15,
     show_context_window=False,
     context_window=4096,
+    agent_can_change_max_past_actions=False,
 ) -> str:
     return app_tab_mgr.get_agent_context(
         agent_id,
         max_past_actions=max_past_actions,
         show_context_window=show_context_window,
         context_window=context_window,
+        agent_can_change_max_past_actions=agent_can_change_max_past_actions,
     )
 
 
@@ -206,6 +208,7 @@ def _handle_input(
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
     scw = getattr(agent, "show_context_window", False) if agent else False
     cw = getattr(agent, "context_window", 4096) if agent else 4096
+    acc = getattr(agent, "agent_can_change_max_past_actions", False) if agent else False
 
     app_tab_mgr.refresh_interfaces(agent_id)
     ctx = _context(
@@ -213,6 +216,7 @@ def _handle_input(
         max_past_actions=max_pa,
         show_context_window=scw,
         context_window=cw,
+        agent_can_change_max_past_actions=acc,
     )
 
     combined = ctx + "\n\n" + content if ctx else content
@@ -274,6 +278,7 @@ def _dispatch(
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
     scw = getattr(agent, "show_context_window", False) if agent else False
     cw = getattr(agent, "context_window", 4096) if agent else 4096
+    acc = getattr(agent, "agent_can_change_max_past_actions", False) if agent else False
 
     def _ctx() -> str:
         return _context(
@@ -281,6 +286,7 @@ def _dispatch(
             max_past_actions=max_pa,
             show_context_window=scw,
             context_window=cw,
+            agent_can_change_max_past_actions=acc,
         )
 
     clean = raw.replace('\\"', '"')
@@ -405,6 +411,46 @@ def _dispatch(
                         app_id=app_id, summary=summary, time_svc=time_svc,
                     )
                 results.append({"type": "context", "content": _ctx()})
+        elif command in ("config",):
+            new_max = item.get("max_past_actions")
+            if new_max is None:
+                err = {"error": "max_past_actions required for config command"}
+                results.append({"type": "error", "data": err})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(err), time_svc=time_svc,
+                    )
+            else:
+                try:
+                    new_max = int(new_max)
+                except (ValueError, TypeError):
+                    new_max = -1
+                if new_max < 3:
+                    err = {"error": f"max_past_actions must be at least 3, got {new_max}"}
+                    results.append({"type": "error", "data": err})
+                    if past_actions_svc:
+                        past_actions_svc.record_action(
+                            agent_id, "assistant", json.dumps(err), time_svc=time_svc,
+                        )
+                elif not acc:
+                    err = {"error": "Agent not allowed to change max_past_actions"}
+                    results.append({"type": "error", "data": err})
+                    if past_actions_svc:
+                        past_actions_svc.record_action(
+                            agent_id, "assistant", json.dumps(err), time_svc=time_svc,
+                        )
+                else:
+                    services["agent_mgr"].update_agent(agent_id, max_past_actions=new_max)
+                    if agent is not None:
+                        agent.max_past_actions = new_max
+                    max_pa = new_max
+                    result = {"status": "updated", "max_past_actions": new_max}
+                    results.append({"type": "result", "command": "config", "data": result})
+                    if past_actions_svc:
+                        past_actions_svc.record_action(
+                            agent_id, "assistant", json.dumps(result), time_svc=time_svc,
+                        )
+                    results.append({"type": "context", "content": _ctx()})
         elif command in ("help",):
             help_data = {
                 "open": {"usage": '{"command": "open", "app_id": "...", "tab_label": "...", "params": {...}}', "description": "Open an app tab"},
@@ -413,6 +459,7 @@ def _dispatch(
                 "tabs": {"usage": '{"command": "tabs"}', "description": "List open tabs"},
                 "apps": {"usage": '{"command": "apps"}', "description": "List available apps"},
                 "execute": {"usage": '{"command": "execute", "app_id": "...", "action": {...}}', "description": "Execute an action on an app"},
+                "config": {"usage": '{"command": "config", "max_past_actions": <number>}', "description": "Change agent's max past actions limit (min 3)"},
                 "help": {"usage": '{"command": "help"}', "description": "Show this help"},
                 "quit": {"usage": '{"command": "quit"}', "description": "Exit simulator"},
                 "input": {"usage": '{"input": "..."} or plain text', "description": "Simulate agent receiving input"},
@@ -488,11 +535,13 @@ def simulation_main() -> None:
     max_pa = agent.max_past_actions if hasattr(agent, "max_past_actions") else 15
     scw = agent.show_context_window if hasattr(agent, "show_context_window") else False
     cw = agent.context_window if hasattr(agent, "context_window") else 4096
+    acc = agent.agent_can_change_max_past_actions if hasattr(agent, "agent_can_change_max_past_actions") else False
     ctx = _context(
         agent_id, app_tab_mgr,
         max_past_actions=max_pa,
         show_context_window=scw,
         context_window=cw,
+        agent_can_change_max_past_actions=acc,
     )
     agent_info = _oj({
         "type": "session",

@@ -21,6 +21,7 @@ class AgentRecord:
     model_ref: Optional[str] = None
     backup_model_ref: Optional[str] = None
     max_past_actions: int = 15
+    agent_can_change_max_past_actions: bool = False
     show_context_window: bool = True
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

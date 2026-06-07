@@ -22,10 +22,21 @@ class PastActionsHandler(AppHandler):
     ) -> str:
         agent_id = params.get("agent_id", "")
         max_count = params.get("max_past_actions", 15)
-        interface = self._past_actions_svc.generate_tab_interface(agent_id, max_count)
+        agent_can_change = params.get("agent_can_change_max_past_actions", False)
+        interface = self._past_actions_svc.generate_tab_interface(agent_id, max_count, agent_can_change)
         if interface is None:
             label = f" ({tab_label})" if tab_label else ""
-            return f"[Past Actions]{label}\n  Status: Open\n  (no recent actions)"
+            lines = [
+                f"[Past Actions]{label}",
+                "  Status: Open",
+                "",
+                f"  Your past actions will be truncated after {max_count} interactions and will be moved out of the window.",
+                "  You will no longer be able to see or know that action.",
+            ]
+            if agent_can_change:
+                lines.append('  To change: {"command": "config", "max_past_actions": <number>}')
+            lines.append("  (no recent actions)")
+            return "\n".join(lines)
         return interface
 
     def execute(self, params: dict) -> dict:

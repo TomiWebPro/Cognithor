@@ -230,6 +230,7 @@ class AppTabManager:
         agent_id: str,
         max_past_actions: int = 15,
         show_context_window: bool = False,
+        agent_can_change_max_past_actions: bool = False,
     ) -> None:
         for app_id in self._SYSTEM_PERSISTENT_APPS:
             if app_id == "__context_window__" and not show_context_window:
@@ -250,24 +251,32 @@ class AppTabManager:
                         "UPDATE agent_open_apps SET is_persistent = 1, updated_at = ? WHERE id = ?",
                         (now, existing["id"]),
                     )
-                if app_id == "__past_actions__":
-                    try:
-                        stored = json.loads(existing["params"]) if existing["params"] else {}
-                    except (json.JSONDecodeError, TypeError):
-                        stored = {}
-                    if stored.get("max_past_actions") != max_past_actions:
-                        stored["max_past_actions"] = max_past_actions
+                try:
+                    stored = json.loads(existing["params"]) if existing["params"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    stored = {}
+                if app_id == "__list_apps__":
+                    if stored.get("agent_id") != agent_id:
+                        stored["agent_id"] = agent_id
                         self._svc.execute(
                             "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
                             (json.dumps(stored), now, existing["id"]),
                         )
+                if app_id == "__past_actions__":
+                    if stored.get("max_past_actions") != max_past_actions:
+                        stored["max_past_actions"] = max_past_actions
+                    stored["agent_can_change_max_past_actions"] = agent_can_change_max_past_actions
+                    self._svc.execute(
+                        "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(stored), now, existing["id"]),
+                    )
                 continue
             if app_id == "__list_apps__":
-                self.open_app(agent_id, app_id, is_persistent=True)
+                self.open_app(agent_id, app_id, is_persistent=True, params={"agent_id": agent_id})
             elif app_id == "__past_actions__":
                 self.open_app(
                     agent_id, app_id, is_persistent=True,
-                    params={"agent_id": agent_id, "max_past_actions": max_past_actions},
+                    params={"agent_id": agent_id, "max_past_actions": max_past_actions, "agent_can_change_max_past_actions": agent_can_change_max_past_actions},
                 )
             elif app_id == "__context_window__":
                 self.open_app(
@@ -307,8 +316,9 @@ class AppTabManager:
         max_past_actions: int = 15,
         show_context_window: bool = False,
         context_window: int = 4096,
+        agent_can_change_max_past_actions: bool = False,
     ) -> str:
-        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window)
+        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window, agent_can_change_max_past_actions)
         self.refresh_interfaces(agent_id)
         records = self.list_open_apps(agent_id)
 
@@ -381,9 +391,19 @@ class AppTabManager:
 
     def update_tab_params(self, tab_id: str, params: dict) -> None:
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        existing = self._svc.query_one(
+            "SELECT params FROM agent_open_apps WHERE id = ?", (tab_id,)
+        )
+        merged = {}
+        if existing and existing["params"]:
+            try:
+                merged.update(json.loads(existing["params"]))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        merged.update(params)
         self._svc.execute(
             "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(params), now, tab_id),
+            (json.dumps(merged), now, tab_id),
         )
 
     def _row_to_record(self, row) -> AgentOpenAppRecord:

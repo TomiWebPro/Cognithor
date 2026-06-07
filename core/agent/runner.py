@@ -42,6 +42,7 @@ class AgentRunner:
             max_past_actions=agent.max_past_actions or 15,
             show_context_window=agent.show_context_window,
             context_window=agent.context_window or 4096,
+            agent_can_change_max_past_actions=agent.agent_can_change_max_past_actions,
         )
 
         agent_info = json.dumps({
@@ -50,6 +51,8 @@ class AgentRunner:
                 "name": agent.name,
                 "agent_id": agent.agent_id,
                 "context_window": agent.context_window,
+                "max_past_actions": agent.max_past_actions or 15,
+                "agent_can_change_max_past_actions": agent.agent_can_change_max_past_actions,
             },
         }, indent=2)
 
@@ -79,8 +82,34 @@ class AgentRunner:
             context=agent_id,
         )
 
+        response = self._handle_config_command(response, agent)
+
         if self.past_actions_svc is not None:
             self.past_actions_svc.record_action(agent_id, "assistant", response)
             self.past_actions_svc.trim_actions(agent_id, agent.max_past_actions or 15)
 
         return response
+
+    def _handle_config_command(self, response: str, agent) -> str:
+        import re as _re
+        match = _re.search(r'\{"command"\s*:\s*"config"\s*,\s*"max_past_actions"\s*:\s*(\d+)\s*\}', response)
+        if not match:
+            match = _re.search(r"\{\s*'command'\s*:\s*'config'\s*,\s*'max_past_actions'\s*:\s*(\d+)\s*\}", response)
+        if not match:
+            return response
+
+        new_val = int(match.group(1))
+        if new_val < 3:
+            logger.warning("Config command rejected: max_past_actions %d is below minimum 3", new_val)
+            return response
+        if not getattr(agent, "agent_can_change_max_past_actions", False):
+            logger.warning("Config command rejected: agent not allowed to change max_past_actions")
+            return response
+
+        self.agent_mgr.update_agent(agent.agent_id, max_past_actions=new_val)
+        agent.max_past_actions = new_val
+        logger.info("Agent %s updated max_past_actions to %d via config command", agent.agent_id, new_val)
+
+        stripped = response[:match.start()].rstrip() + response[match.end():]
+        stripped = stripped.strip()
+        return stripped if stripped else response

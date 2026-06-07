@@ -130,6 +130,7 @@ class PastActionsService:
         self,
         agent_id: str,
         max_count: int = 15,
+        agent_can_change: bool = False,
     ) -> Optional[str]:
         actions = self.get_recent_actions(agent_id, max_count)
         if not actions:
@@ -137,6 +138,11 @@ class PastActionsService:
 
         lines = ["[Past Actions]"]
         lines.append("  Status: Open")
+        lines.append("")
+        lines.append(f"  Your past actions will be truncated after {max_count} interactions and will be moved out of the window.")
+        lines.append("  You will no longer be able to see or know that action.")
+        if agent_can_change:
+            lines.append('  To change: {"command": "config", "max_past_actions": <number>}')
         lines.append("")
         for a in actions:
             raw_role = a.role.lower()
