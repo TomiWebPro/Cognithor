@@ -3,6 +3,8 @@ from core.app import ListAppsHandler
 from core.time import TimeService, TimeConfig
 from core.past_action import PastActionsService, PastActionRecord, PastActionsHandler
 from core.context_window import ContextWindowHandler
+from core.notes import NotesHandler
+from core.diary import DiaryService, DiaryHandler
 from core.agent import AgentRunner
 
 __all__ = [
@@ -16,5 +18,8 @@ __all__ = [
     "PastActionRecord",
     "PastActionsHandler",
     "ContextWindowHandler",
+    "NotesHandler",
+    "DiaryService",
+    "DiaryHandler",
     "AgentRunner",
 ]

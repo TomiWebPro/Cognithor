@@ -28,7 +28,7 @@ def create_app(use_encryption: bool = False):
     from fastapi import FastAPI
     from agents_service import AgentManager
     from apps_service import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, PastActionsService
+    from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, PastActionsService, NotesHandler, DiaryService
     from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
@@ -44,6 +44,8 @@ def create_app(use_encryption: bool = False):
         security_router,
         settings_router,
         time_router,
+        notes_router,
+        diary_router,
     )
 
     @asynccontextmanager
@@ -67,14 +69,20 @@ def create_app(use_encryption: bool = False):
 
         app.state.past_actions_svc = PastActionsService(svc=config_mgr._svc)
 
+        notes_handler = NotesHandler(svc=config_mgr._svc)
+        app.state.notes_handler = notes_handler
+
         app_tab_mgr = AppTabManager(svc=config_mgr._svc, app_registry=app_registry)
         app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
         app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, app.state.agent_app_mgr))
         app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(app.state.past_actions_svc))
         app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
+        app_tab_mgr.register_handler("__notes__", notes_handler)
         app.state.app_tab_mgr = app_tab_mgr
 
+        app.state.diary_svc = DiaryService(svc=config_mgr._svc)
         app.state.time_svc = TimeService(svc=config_mgr._svc)
+        app_tab_mgr.register_handler("__diary__", DiaryHandler(app.state.diary_svc, app.state.time_svc))
 
         app.state.encryption_in_progress = False
 
@@ -105,6 +113,8 @@ def create_app(use_encryption: bool = False):
     app.include_router(agents_router.router)
     app.include_router(apps_router.router)
     app.include_router(time_router.router)
+    app.include_router(notes_router.router)
+    app.include_router(diary_router.router)
 
     app.add_middleware(EncryptionMiddleware)
 

@@ -113,8 +113,9 @@ def _init_services(use_encryption: bool = False) -> None:
     CONFIG["app_registry"] = app_registry
     CONFIG["agent_app_mgr"] = AgentAppManager(svc=svc)
 
-    from core import TimeService
+    from core import TimeService, DiaryService
     CONFIG["time_svc"] = TimeService(svc=svc)
+    CONFIG["diary_svc"] = DiaryService(svc=svc)
 
     print_empty()
     print_step(3, 3, "Initialization complete")
@@ -342,9 +343,11 @@ def cmd_agents_menu() -> None:
                 backup = a.backup_model_ref or "-"
                 cw_flag = "CW" if a.show_context_window else ""
                 can_change = "YES" if a.agent_can_change_max_past_actions else "no"
-                rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), can_change, cw_flag, primary, backup])
+                notes_flag = "Notes" if a.show_notes else ""
+                diary_flag = "Diary" if a.show_diary else ""
+                rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), can_change, cw_flag, notes_flag, diary_flag, primary, backup])
             print_table(
-                ["ID", "Name", "Context Window", "Past Actions", "Agent Edit", "CW Tab", "Model Ref", "Backup Ref"],
+                ["ID", "Name", "CW", "Past Actions", "Agent Edit", "CW Tab", "Notes", "Diary", "Model Ref", "Backup Ref"],
                 rows,
             )
         else:
@@ -358,17 +361,20 @@ def cmd_agents_menu() -> None:
                 "Edit past actions limit",
                 "Toggle context window tab",
                 "Toggle agent can change past actions limit",
+                "Toggle notes tab",
+                "Toggle diary feature",
+                "View diary entries",
                 "Link primary model",
                 "Link backup model",
                 "Delete agent",
                 "Back to main menu",
             ],
             title="Select an action",
-            default=8,
+            default=11,
             hint="Manage autonomous agents",
         )
 
-        if choice == 8:
+        if choice == 11:
             return
 
         if choice == 0:
@@ -479,6 +485,60 @@ def cmd_agents_menu() -> None:
                 print_warning("No agents")
                 pause()
                 continue
+            alist = [f"{a.agent_id} — {a.name} (notes={'ON' if a.show_notes else 'OFF'})" for a in agents]
+            aidx = choose(alist, title="Select agent to toggle notes tab")
+            agent = agents[aidx]
+            new_val = not agent.show_notes
+            agent_mgr.update_agent(agent.agent_id, show_notes=new_val)
+            status = "ON" if new_val else "OFF"
+            print_success(f"Notes tab for '{agent.name}' → {status}")
+
+        elif choice == 6:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
+            alist = [f"{a.agent_id} — {a.name} (diary={'ON' if a.show_diary else 'OFF'})" for a in agents]
+            aidx = choose(alist, title="Select agent to toggle diary feature")
+            agent = agents[aidx]
+            new_val = not agent.show_diary
+            agent_mgr.update_agent(agent.agent_id, show_diary=new_val)
+            status = "ON" if new_val else "OFF"
+            print_success(f"Diary feature for '{agent.name}' → {status}")
+
+        elif choice == 7:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
+            alist = [f"{a.agent_id} — {a.name}" for a in agents]
+            aidx = choose(alist, title="Select agent to view diary")
+            agent = agents[aidx]
+            diary_svc = CONFIG.get("diary_svc")
+            if not diary_svc:
+                print_warning("Diary service not initialized")
+                pause()
+                continue
+            entries = diary_svc.list_entries(agent.agent_id)
+            if not entries:
+                print_warning("No diary entries for this agent")
+                pause()
+                continue
+            from cli_service.display import print_table as _pt
+            rows = []
+            for e in entries:
+                rows.append([e.date, e.content[:80] + ("..." if len(e.content) > 80 else ""), e.updated_at or ""])
+            _pt(["Date", "Content", "Updated"], rows, title=f"Diary — {agent.name}")
+            pause()
+
+        elif choice == 8:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
             alist = [f"{a.agent_id} — {a.name}" for a in agents]
             aidx = choose(alist, title="Select agent to link primary model")
             agent = agents[aidx]
@@ -488,7 +548,7 @@ def cmd_agents_menu() -> None:
             agent_mgr.update_agent(agent.agent_id, model_ref=ref)
             print_success(f"Linked {agent.agent_id} primary → {ref}")
 
-        elif choice == 6:
+        elif choice == 9:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")
@@ -503,7 +563,7 @@ def cmd_agents_menu() -> None:
             agent_mgr.update_agent(agent.agent_id, backup_model_ref=ref)
             print_success(f"Linked {agent.agent_id} backup → {ref}")
 
-        elif choice == 7:
+        elif choice == 10:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")

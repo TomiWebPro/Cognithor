@@ -73,7 +73,23 @@ Main Menu
 │      ├── Delete provider — remove permanently (with confirmation)
 │      └── Back to main menu
 │
-├── 3. Database Management
+├── 3. Agent Management
+│      Lists all agents in a table with config parameters.
+│      Sub-actions:
+│      ├── Add agent — create a new agent
+│      ├── Edit context window — change max token limit
+│      ├── Edit past actions limit — change history depth
+│      ├── Toggle context window tab — show/hide token usage
+│      ├── Toggle agent can change past actions limit
+│      ├── Toggle notes tab — show/hide Notes temporal memory tab
+│      ├── Toggle diary feature — show/hide Diary long-term memory tab
+│      ├── View diary entries — browse past diary entries
+│      ├── Link primary model
+│      ├── Link backup model
+│      ├── Delete agent (with confirmation)
+│      └── Back to main menu
+│
+├── 4. Database Management
 │      Shows encryption status panel and pysqlcipher3 availability.
 │      If pysqlcipher3 is missing and DB is plain-text, shows
 │      installation instructions in an orange warning panel.
@@ -82,7 +98,7 @@ Main Menu
 │      └── Decrypt database  (visible when encrypted)
 │      └── Back to main menu
 │
-├── 4. Connection Info
+├── 5. Connection Info
 │      Sub-actions:
 │      ├── Show connection info
 │      │     Displays host, port, username, password, and a base64
@@ -94,7 +110,7 @@ Main Menu
 │      │     frontend onboarding.
 │      └── Back to main menu
 │
-└── 5. Quit
+└── 6. Quit
 ```
 
 ### Key functions
@@ -112,6 +128,42 @@ delete actions.
 
 **`cmd_models_menu(tracker, provider)`**: Sub-sub-menu for adding and
 removing models from a specific provider.
+
+**`cmd_agents_menu()`**: Lists all agents in a table with config
+parameters. Provides sub-actions for agent management:
+
+```
+ 1. Add agent
+ 2. Edit context window
+ 3. Edit past actions limit
+ 4. Toggle context window tab
+ 5. Toggle agent can change past actions limit
+ 6. Toggle notes tab
+ 7. Toggle diary feature
+ 8. View diary entries
+ 9. Link primary model
+10. Link backup model
+11. Delete agent
+12. Back to main menu
+```
+
+The agents table shows the following columns:
+
+| Column | Description |
+|--------|-------------|
+| `ID` | 6-char agent ID |
+| `Name` | Friendly name |
+| `CW` | Context window size (tokens) |
+| `Past Actions` | Max past action limit |
+| `Agent Edit` | Whether agent can change past action limit |
+| `CW Tab` | Context window tab on/off |
+| `Notes` | Notes tab on/off |
+| `Diary` | Diary tab on/off |
+| `Model Ref` | Primary model reference |
+| `Backup Ref` | Fallback model reference |
+
+The diary view (option 8) lists all past diary entries for the selected
+agent, showing date, content preview, and last updated timestamp.
 
 **`cmd_database_menu()`**: Shows the encryption status panel and
 pysqlcipher3 availability check.  Offers encrypt or decrypt depending

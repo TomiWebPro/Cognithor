@@ -60,7 +60,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     from api_service.database import ApiConfigManager
     from agents_service.database import AgentManager
     from apps_service.database import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService
+    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService, NotesHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
 
@@ -97,10 +97,14 @@ def _init_services(use_encryption: bool = False) -> dict:
     app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry)
     app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, agent_app_mgr))
+    notes_handler = NotesHandler(svc=svc)
     app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(past_actions_svc))
     app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
+    app_tab_mgr.register_handler("__notes__", notes_handler)
 
+    diary_svc = DiaryService(svc=svc)
     time_svc = TimeService(svc=svc)
+    app_tab_mgr.register_handler("__diary__", DiaryHandler(diary_svc, time_svc))
 
     return {
         "svc": svc,
@@ -111,6 +115,8 @@ def _init_services(use_encryption: bool = False) -> dict:
         "app_tab_mgr": app_tab_mgr,
         "time_svc": time_svc,
         "past_actions_svc": past_actions_svc,
+        "notes_handler": notes_handler,
+        "diary_svc": diary_svc,
     }
 
 
@@ -125,6 +131,8 @@ def _context(
     show_context_window=False,
     context_window=4096,
     agent_can_change_max_past_actions=False,
+    show_notes=True,
+    show_diary=True,
 ) -> str:
     return app_tab_mgr.get_agent_context(
         agent_id,
@@ -132,6 +140,8 @@ def _context(
         show_context_window=show_context_window,
         context_window=context_window,
         agent_can_change_max_past_actions=agent_can_change_max_past_actions,
+        show_notes=show_notes,
+        show_diary=show_diary,
     )
 
 
@@ -235,6 +245,10 @@ _SHORTCUTS = {
     "list_apps": ("apps", None),
     "list_tabs": ("tabs", None),
     "context": ("context", None),
+    "write_note": ("write_note", None),
+    "extend_note": ("extend_note", None),
+    "write_diary": ("write_diary", None),
+    "list_diary": ("list_diary", None),
     "help": ("help", None),
     "quit": ("quit", None),
     "exit": ("quit", None),
@@ -275,10 +289,14 @@ def _dispatch(
 
     time_svc = services.get("time_svc")
     past_actions_svc = services.get("past_actions_svc")
+    notes_handler = services.get("notes_handler")
+    diary_svc = services.get("diary_svc")
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
     scw = getattr(agent, "show_context_window", False) if agent else False
     cw = getattr(agent, "context_window", 4096) if agent else 4096
     acc = getattr(agent, "agent_can_change_max_past_actions", False) if agent else False
+    sn = getattr(agent, "show_notes", True) if agent else True
+    sd = getattr(agent, "show_diary", True) if agent else True
 
     def _ctx() -> str:
         return _context(
@@ -287,6 +305,8 @@ def _dispatch(
             show_context_window=scw,
             context_window=cw,
             agent_can_change_max_past_actions=acc,
+            show_notes=sn,
+            show_diary=sd,
         )
 
     clean = raw.replace('\\"', '"')
@@ -451,6 +471,52 @@ def _dispatch(
                             agent_id, "assistant", json.dumps(result), time_svc=time_svc,
                         )
                     results.append({"type": "context", "content": _ctx()})
+        elif command in ("write_note", "extend_note"):
+            if not notes_handler:
+                err = {"error": "Notes handler not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                if command == "extend_note":
+                    max_int = item.get("max_interactions", 10)
+                    notes_handler.extend_note(agent_id, max_interactions=max_int)
+                    result = {"success": True, "type": "notes", "action": "extended", "max_interactions": max_int}
+                else:
+                    content = item.get("content", "")
+                    max_int = item.get("max_interactions", 10)
+                    result = notes_handler.execute({"agent_id": agent_id, "content": content, "max_interactions": max_int})
+                results.append({"type": "result", "command": command, "data": result})
+                results.append({"type": "context", "content": _ctx()})
+        elif command in ("write_diary",):
+            if not diary_svc:
+                err = {"error": "Diary service not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                content = item.get("content", "")
+                result = diary_svc.append_diary(agent_id, content, time_svc=time_svc)
+                results.append({"type": "result", "command": "write_diary", "data": result})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(result), time_svc=time_svc,
+                    )
+                results.append({"type": "context", "content": _ctx()})
+        elif command in ("list_diary",):
+            if not diary_svc:
+                err = {"error": "Diary service not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                date = item.get("date")
+                entries = diary_svc.list_entries(agent_id, date=date)
+                data = [
+                    {"date": e.date, "content": e.content, "created_at": e.created_at, "updated_at": e.updated_at}
+                    for e in entries
+                ]
+                result = {"entries": data}
+                results.append({"type": "result", "command": "list_diary", "data": result})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(result), time_svc=time_svc,
+                    )
+                results.append({"type": "context", "content": _ctx()})
         elif command in ("help",):
             help_data = {
                 "open": {"usage": '{"command": "open", "app_id": "...", "tab_label": "...", "params": {...}}', "description": "Open an app tab"},
@@ -460,6 +526,10 @@ def _dispatch(
                 "apps": {"usage": '{"command": "apps"}', "description": "List available apps"},
                 "execute": {"usage": '{"command": "execute", "app_id": "...", "action": {...}}', "description": "Execute an action on an app"},
                 "config": {"usage": '{"command": "config", "max_past_actions": <number>}', "description": "Change agent's max past actions limit (min 3)"},
+                "write_note": {"usage": '{"command": "write_note", "content": "..."}', "description": "Overwrite the notes tab content"},
+                "extend_note": {"usage": '{"command": "extend_note", "max_interactions": <number>}', "description": "Extend the note lifespan (resets counter)"},
+                "write_diary": {"usage": '{"command": "write_diary", "content": "..."}', "description": "Append to today's diary entry"},
+                "list_diary": {"usage": '{"command": "list_diary", "date": "YYYY-MM-DD"}', "description": "List diary entries (omit date for all)"},
                 "help": {"usage": '{"command": "help"}', "description": "Show this help"},
                 "quit": {"usage": '{"command": "quit"}', "description": "Exit simulator"},
                 "input": {"usage": '{"input": "..."} or plain text', "description": "Simulate agent receiving input"},
@@ -536,12 +606,16 @@ def simulation_main() -> None:
     scw = agent.show_context_window if hasattr(agent, "show_context_window") else False
     cw = agent.context_window if hasattr(agent, "context_window") else 4096
     acc = agent.agent_can_change_max_past_actions if hasattr(agent, "agent_can_change_max_past_actions") else False
+    sn = agent.show_notes if hasattr(agent, "show_notes") else True
+    sd = agent.show_diary if hasattr(agent, "show_diary") else True
     ctx = _context(
         agent_id, app_tab_mgr,
         max_past_actions=max_pa,
         show_context_window=scw,
         context_window=cw,
         agent_can_change_max_past_actions=acc,
+        show_notes=sn,
+        show_diary=sd,
     )
     agent_info = _oj({
         "type": "session",

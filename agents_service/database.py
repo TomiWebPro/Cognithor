@@ -54,6 +54,18 @@ class AgentManager:
             )
         except Exception:
             logger.info("Column agent_can_change_max_past_actions already exists or could not be added", exc_info=True)
+        try:
+            self._svc.execute(
+                "ALTER TABLE agents ADD COLUMN show_notes INTEGER DEFAULT 1"
+            )
+        except Exception:
+            logger.info("Column show_notes already exists or could not be added", exc_info=True)
+        try:
+            self._svc.execute(
+                "ALTER TABLE agents ADD COLUMN show_diary INTEGER DEFAULT 1"
+            )
+        except Exception:
+            logger.info("Column show_diary already exists or could not be added", exc_info=True)
 
     def _ensure_unique_id(self) -> str:
         for _ in range(100):
@@ -74,15 +86,17 @@ class AgentManager:
         max_past_actions: int = 15,
         show_context_window: bool = True,
         agent_can_change_max_past_actions: bool = False,
+        show_notes: bool = True,
+        show_diary: bool = True,
     ) -> AgentRecord:
         max_past_actions = max(3, max_past_actions)
         agent_id = self._ensure_unique_id()
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._svc.execute(
             """INSERT INTO agents
-                (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, show_context_window, agent_can_change_max_past_actions, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, int(show_context_window), int(agent_can_change_max_past_actions), now, now),
+                (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, show_context_window, agent_can_change_max_past_actions, show_notes, show_diary, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (agent_id, name, context_window, model_ref, backup_model_ref, max_past_actions, int(show_context_window), int(agent_can_change_max_past_actions), int(show_notes), int(show_diary), now, now),
         )
         row = self._svc.query_one("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
         return self._row_to_record(row)
@@ -109,6 +123,8 @@ class AgentManager:
         max_past_actions: Optional[int] = None,
         show_context_window: Optional[bool] = None,
         agent_can_change_max_past_actions: Optional[bool] = None,
+        show_notes: Optional[bool] = None,
+        show_diary: Optional[bool] = None,
     ) -> Optional[AgentRecord]:
         existing = self.get_agent(agent_id)
         if existing is None:
@@ -125,11 +141,15 @@ class AgentManager:
                 max_past_actions = COALESCE(?, max_past_actions),
                 show_context_window = COALESCE(?, show_context_window),
                 agent_can_change_max_past_actions = COALESCE(?, agent_can_change_max_past_actions),
+                show_notes = COALESCE(?, show_notes),
+                show_diary = COALESCE(?, show_diary),
                 updated_at = ?
              WHERE agent_id = ?""",
             (name, context_window, model_ref, backup_model_ref, max_past_actions,
              int(show_context_window) if show_context_window is not None else None,
              int(agent_can_change_max_past_actions) if agent_can_change_max_past_actions is not None else None,
+             int(show_notes) if show_notes is not None else None,
+             int(show_diary) if show_diary is not None else None,
              now, agent_id),
         )
         return self.get_agent(agent_id)
@@ -154,6 +174,14 @@ class AgentManager:
             acc = bool(row["agent_can_change_max_past_actions"])
         except (IndexError, KeyError, TypeError):
             acc = False
+        try:
+            sn = bool(row["show_notes"])
+        except (IndexError, KeyError, TypeError):
+            sn = True
+        try:
+            sd = bool(row["show_diary"])
+        except (IndexError, KeyError, TypeError):
+            sd = True
         return AgentRecord(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -164,6 +192,8 @@ class AgentManager:
             max_past_actions=mpa,
             agent_can_change_max_past_actions=acc,
             show_context_window=scw,
+            show_notes=sn,
+            show_diary=sd,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

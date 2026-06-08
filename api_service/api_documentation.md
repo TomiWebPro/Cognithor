@@ -214,7 +214,7 @@ All agent endpoints require authentication and use encrypted payloads. Each agen
 | `GET` | `/agents` | List all agents |
 | `GET` | `/agents/{agent_id}` | Get agent by 6-char ID |
 | `POST` | `/agents` | Create agent |
-| `PUT` | `/agents/{agent_id}` | Update agent (context window, model refs, name) |
+| `PUT` | `/agents/{agent_id}` | Update agent (context window, model refs, name, toggles) |
 | `DELETE` | `/agents/{agent_id}` | Delete agent |
 
 **Create agent:**
@@ -223,7 +223,9 @@ All agent endpoints require authentication and use encrypted payloads. Each agen
   "name": "MyAgent",
   "context_window": 8192,
   "model_ref": "openai::gpt-4o",
-  "backup_model_ref": "anthropic::claude-sonnet-4-20250514"
+  "backup_model_ref": "anthropic::claude-sonnet-4-20250514",
+  "show_notes": true,
+  "show_diary": true
 }
 ```
 
@@ -236,8 +238,96 @@ All agent endpoints require authentication and use encrypted payloads. Each agen
   "context_window": 8192,
   "model_ref": "openai::gpt-4o",
   "backup_model_ref": "anthropic::claude-sonnet-4-20250514",
+  "show_notes": true,
+  "show_diary": true,
   "created_at": "...",
   "updated_at": "..."
+}
+```
+
+### Agent fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | Friendly agent name |
+| `context_window` | int | 4096 | Max token limit for context |
+| `model_ref` | string | null | Primary model in `provider::model` format |
+| `backup_model_ref` | string | null | Fallback model |
+| `max_past_actions` | int | 15 | Number of past actions in context (min 3) |
+| `agent_can_change_max_past_actions` | bool | false | Whether agent can self-adjust past action limit |
+| `show_context_window` | bool | true | Show token usage tab |
+| `show_notes` | bool | true | Show Notes tab (temporal memory, overwritable, auto-expires) |
+| `show_diary` | bool | true | Show Diary tab (long-term memory, append-only) |
+
+### Notes
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/agents/{agent_id}/notes` | Get current note content |
+| `PUT` | `/agents/{agent_id}/notes` | Overwrite note content |
+
+**Read notes:**
+```json
+GET /agents/{agent_id}/notes
+
+Response:
+{
+  "agent_id": "aB3xK9",
+  "notes": "current plan here"
+}
+```
+
+**Write notes:**
+```json
+PUT /agents/{agent_id}/notes
+{
+  "content": "new plan here"
+}
+
+Response:
+{
+  "agent_id": "aB3xK9",
+  "notes": "new plan here"
+}
+```
+
+### Diary
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/agents/{agent_id}/diary` | Append to today's diary entry |
+| `GET` | `/agents/{agent_id}/diary` | List diary entries (optional `?date=YYYY-MM-DD`) |
+
+**Append to diary:**
+```json
+POST /agents/{agent_id}/diary
+{
+  "content": "Accomplished X, Y, Z"
+}
+
+Response:
+{
+  "success": true,
+  "date": "2026-06-08",
+  "type": "diary"
+}
+```
+
+**List diary entries:**
+```json
+GET /agents/{agent_id}/diary
+
+Response:
+{
+  "agent_id": "aB3xK9",
+  "entries": [
+    {
+      "date": "2026-06-08",
+      "content": "Accomplished X, Y, Z",
+      "created_at": "...",
+      "updated_at": "..."
+    }
+  ]
 }
 ```
 
@@ -289,6 +379,8 @@ When toggling database encryption, all three databases (`cognithor.db`, `cognith
 | `api_service/routers/security_router.py` | TTL validation (0.5–10 min range), DB encryption toggle, token refresh |
 | `api_service/routers/settings_router.py` | General settings CRUD, user management |
 | `api_service/routers/onboarding_router.py` | Passkey + QR code generation for frontend onboarding |
+| `api_service/routers/notes_router.py` | Notes CRUD (`GET/PUT /agents/{id}/notes`) |
+| `api_service/routers/diary_router.py` | Diary append + list (`POST/GET /agents/{id}/diary`) |
 
 ## Error Codes
 

@@ -223,7 +223,7 @@ class AppTabManager:
             return None
         return self._row_to_record(row)
 
-    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__"]
+    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__", "__notes__", "__diary__"]
 
     def ensure_persistent_tabs(
         self,
@@ -231,9 +231,23 @@ class AppTabManager:
         max_past_actions: int = 15,
         show_context_window: bool = False,
         agent_can_change_max_past_actions: bool = False,
+        show_notes: bool = True,
+        show_diary: bool = True,
     ) -> None:
         for app_id in self._SYSTEM_PERSISTENT_APPS:
             if app_id == "__context_window__" and not show_context_window:
+                self._svc.execute(
+                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
+                    (agent_id, app_id),
+                )
+                continue
+            if app_id == "__notes__" and not show_notes:
+                self._svc.execute(
+                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
+                    (agent_id, app_id),
+                )
+                continue
+            if app_id == "__diary__" and not show_diary:
                 self._svc.execute(
                     "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
                     (agent_id, app_id),
@@ -270,6 +284,20 @@ class AppTabManager:
                         "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
                         (json.dumps(stored), now, existing["id"]),
                     )
+                if app_id == "__notes__":
+                    if stored.get("agent_id") != agent_id:
+                        stored["agent_id"] = agent_id
+                        self._svc.execute(
+                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(stored), now, existing["id"]),
+                        )
+                if app_id == "__diary__":
+                    if stored.get("agent_id") != agent_id:
+                        stored["agent_id"] = agent_id
+                        self._svc.execute(
+                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(stored), now, existing["id"]),
+                        )
                 continue
             if app_id == "__list_apps__":
                 self.open_app(agent_id, app_id, is_persistent=True, params={"agent_id": agent_id})
@@ -282,6 +310,16 @@ class AppTabManager:
                 self.open_app(
                     agent_id, app_id, is_persistent=True,
                     params={"used_tokens": 0, "max_tokens": 4096},
+                )
+            elif app_id == "__notes__":
+                self.open_app(
+                    agent_id, app_id, is_persistent=True,
+                    params={"agent_id": agent_id},
+                )
+            elif app_id == "__diary__":
+                self.open_app(
+                    agent_id, app_id, is_persistent=True,
+                    params={"agent_id": agent_id},
                 )
 
     def refresh_interface(self, tab_id: str) -> Optional[str]:
@@ -317,8 +355,10 @@ class AppTabManager:
         show_context_window: bool = False,
         context_window: int = 4096,
         agent_can_change_max_past_actions: bool = False,
+        show_notes: bool = True,
+        show_diary: bool = True,
     ) -> str:
-        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window, agent_can_change_max_past_actions)
+        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window, agent_can_change_max_past_actions, show_notes, show_diary)
         self.refresh_interfaces(agent_id)
         records = self.list_open_apps(agent_id)
 
