@@ -348,6 +348,33 @@ class AppTabManager:
         for rec in self.list_open_apps(agent_id):
             self.refresh_interface(rec.id)
 
+    def sync_notes_tabs(self, agent_id: str, notes_manager) -> None:
+        notes = notes_manager.list_notes(agent_id)
+        note_ids = {n["id"] for n in notes}
+
+        existing_tabs = [r for r in self.list_open_apps(agent_id) if r.app_id == "__note__"]
+        tab_by_note = {}
+        for tab in existing_tabs:
+            params = json.loads(tab.params) if tab.params else {}
+            nid = params.get("note_id")
+            if nid:
+                tab_by_note[nid] = tab.id
+
+        for note in notes:
+            if note["id"] not in tab_by_note:
+                self.open_app(
+                    agent_id, "__note__",
+                    tab_label=note["title"] or "untitled",
+                    params={"note_id": note["id"], "agent_id": agent_id},
+                    is_persistent=False,
+                )
+
+        for nid, tab_id in tab_by_note.items():
+            if nid not in note_ids:
+                self._svc.execute(
+                    "DELETE FROM agent_open_apps WHERE id = ?", (tab_id,)
+                )
+
     def get_agent_context(
         self,
         agent_id: str,
@@ -357,9 +384,16 @@ class AppTabManager:
         agent_can_change_max_past_actions: bool = False,
         show_notes: bool = True,
         show_diary: bool = True,
+        notes_manager=None,
     ) -> str:
         self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window, agent_can_change_max_past_actions, show_notes, show_diary)
+        if notes_manager is not None:
+            self.sync_notes_tabs(agent_id, notes_manager)
         self.refresh_interfaces(agent_id)
+        if notes_manager is not None:
+            self._increment_note_counts(agent_id, notes_manager)
+        if notes_manager is not None:
+            self.sync_notes_tabs(agent_id, notes_manager)
         records = self.list_open_apps(agent_id)
 
         if not records:
@@ -384,12 +418,12 @@ class AppTabManager:
                 text += "\n  (persistent tab)"
             return text
 
+        filtered_records = [rec for rec in other_records if rec.interface_text]
         sections: list[str] = []
-        for i, rec in enumerate(other_records, start=1):
-            if rec.interface_text:
-                if sections:
-                    sections.append("")
-                sections.append(_format_section(rec, i))
+        for i, rec in enumerate(filtered_records, start=1):
+            if sections:
+                sections.append("")
+            sections.append(_format_section(rec, i))
 
         context_without_cw = "\n".join(sections)
 
@@ -401,7 +435,7 @@ class AppTabManager:
             if cw_interface:
                 if sections:
                     sections.append("")
-                cw_index = len(other_records) + 1
+                cw_index = len(filtered_records) + 1
                 cw_text = _format_section(
                     AgentOpenAppRecord(
                         id=cw_record.id,
@@ -415,6 +449,21 @@ class AppTabManager:
                 sections.append(cw_text)
 
         return "\n".join(sections)
+
+    def _increment_note_counts(self, agent_id: str, notes_manager) -> None:
+        for rec in self.list_open_apps(agent_id):
+            if rec.app_id == "__note__":
+                params = json.loads(rec.params) if rec.params else {}
+                note_id = params.get("note_id", "")
+                if note_id:
+                    notes_manager._increment_count(note_id)
+                    expired = notes_manager._check_and_delete_expired(note_id)
+                    if expired:
+                        try:
+                            self.close_tab(rec.id)
+                        except ValueError:
+                            pass
+        self.refresh_interfaces(agent_id)
 
     def set_tab_persistence(self, tab_id: str, persistent: bool) -> None:
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()

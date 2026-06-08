@@ -21,6 +21,7 @@ class AgentRunner:
         past_actions_svc: Optional[PastActionsService] = None,
         notes_handler: Optional = None,
         diary_svc: Optional = None,
+        notes_manager: Optional = None,
     ):
         self.app_tab_mgr = app_tab_mgr
         self.endpoint_mgr = endpoint_mgr
@@ -28,6 +29,7 @@ class AgentRunner:
         self.past_actions_svc = past_actions_svc
         self.notes_handler = notes_handler
         self.diary_svc = diary_svc
+        self.notes_manager = notes_manager
 
     def run(
         self,
@@ -49,6 +51,7 @@ class AgentRunner:
             agent_can_change_max_past_actions=agent.agent_can_change_max_past_actions,
             show_notes=getattr(agent, "show_notes", True),
             show_diary=getattr(agent, "show_diary", True),
+            notes_manager=self.notes_manager,
         )
 
         agent_info = json.dumps({
@@ -121,29 +124,86 @@ class AgentRunner:
         stripped = stripped.strip()
         return stripped if stripped else response
 
+    def _find_note_tab(self, agent_id: str, note_id: str):
+        import json as _json
+        for rec in self.app_tab_mgr.list_open_apps(agent_id):
+            if rec.app_id == "__note__":
+                params = _json.loads(rec.params) if rec.params else {}
+                if params.get("note_id") == note_id:
+                    return rec
+        return None
+
     def _handle_notes_diary_commands(self, response: str, agent, agent_id: str) -> str:
         import re as _re
+        import json as _json
 
-        notes_pattern = _re.compile(
-            r'\{"command"\s*:\s*"write_note"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
+        notes_mgr = getattr(self, "notes_manager", self.notes_handler)
+
+        create_pattern = _re.compile(
+            r'\{"command"\s*:\s*"create_note"\s*,\s*"title"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
         )
-        match = notes_pattern.search(response)
-        if match and self.notes_handler is not None:
-            content = match.group(1)
-            self.notes_handler.execute({"agent_id": agent_id, "content": content})
-            logger.info("Agent %s wrote notes via command", agent_id)
+        match = create_pattern.search(response)
+        if match and notes_mgr is not None:
+            title = match.group(1)
+            content = match.group(2)
+            note_id = notes_mgr.create_note(agent_id, title=title, content=content)
+            self.app_tab_mgr.open_app(
+                agent_id, "__note__",
+                tab_label=title or "untitled",
+                params={"note_id": note_id, "agent_id": agent_id},
+                is_persistent=False,
+            )
+            logger.info("Agent %s created note %s", agent_id, note_id)
+            stripped = response[:match.start()].rstrip() + response[match.end():]
+            stripped = stripped.strip()
+            response = stripped if stripped else response
+
+        write_pattern = _re.compile(
+            r'\{"command"\s*:\s*"edit_note"\s*,\s*"note_id"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"content"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
+        )
+        match = write_pattern.search(response)
+        if match and notes_mgr is not None:
+            note_id = match.group(1)
+            content = match.group(2)
+            notes_mgr.update_note(note_id, content=content)
+            tab = self._find_note_tab(agent_id, note_id)
+            if tab:
+                self.app_tab_mgr.refresh_interface(tab.id)
+            logger.info("Agent %s wrote to note %s", agent_id, note_id)
             stripped = response[:match.start()].rstrip() + response[match.end():]
             stripped = stripped.strip()
             response = stripped if stripped else response
 
         extend_pattern = _re.compile(
-            r'\{"command"\s*:\s*"extend_note"\s*,\s*"max_interactions"\s*:\s*(\d+)\s*\}'
+            r'\{"command"\s*:\s*"reset_note_lifetime"\s*,\s*"note_id"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"max_interactions"\s*:\s*(\d+)\s*\}'
         )
         match = extend_pattern.search(response)
-        if match and self.notes_handler is not None:
-            max_int = int(match.group(1))
-            self.notes_handler.extend_note(agent_id, max_interactions=max_int)
-            logger.info("Agent %s extended note to %d max interactions", agent_id, max_int)
+        if match and notes_mgr is not None:
+            note_id = match.group(1)
+            max_int = int(match.group(2))
+            notes_mgr.extend_note(note_id, max_interactions=max_int)
+            tab = self._find_note_tab(agent_id, note_id)
+            if tab:
+                self.app_tab_mgr.refresh_interface(tab.id)
+            logger.info("Agent %s extended note %s to %d max interactions", agent_id, note_id, max_int)
+            stripped = response[:match.start()].rstrip() + response[match.end():]
+            stripped = stripped.strip()
+            response = stripped if stripped else response
+
+        delete_pattern = _re.compile(
+            r'\{"command"\s*:\s*"delete_note"\s*,\s*"note_id"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}'
+        )
+        match = delete_pattern.search(response)
+        if match and notes_mgr is not None:
+            note_id = match.group(1)
+            notes_mgr.delete_note(note_id)
+            tab = self._find_note_tab(agent_id, note_id)
+            if tab:
+                try:
+                    self.app_tab_mgr.close_tab(tab.id)
+                except ValueError:
+                    pass
+            logger.info("Agent %s deleted note %s", agent_id, note_id)
             stripped = response[:match.start()].rstrip() + response[match.end():]
             stripped = stripped.strip()
             response = stripped if stripped else response

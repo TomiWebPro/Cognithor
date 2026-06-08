@@ -153,6 +153,8 @@ class PastActionsService:
             else:
                 role_label = a.role.upper() if raw_role in ("system", "agent") else a.role
             display = a.summary if a.summary else a.content
+            if len(display) > 100:
+                display = display[:97] + "..."
             if a.app_id:
                 role_label = f"{role_label} [{a.app_id}]"
             ts = ""

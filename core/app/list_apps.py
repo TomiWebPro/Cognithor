@@ -19,6 +19,8 @@ class ListAppsHandler(AppHandler):
     ) -> str:
         agent_id = params.get("agent_id", "")
         installed = self._agent_app_mgr.list_enabled_agent_apps(agent_id) if agent_id else []
+        if not installed:
+            return ""
         label = f" ({tab_label})" if tab_label else ""
         lines = [f"[Available Apps]{label}"]
         lines.append("")

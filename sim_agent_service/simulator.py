@@ -60,7 +60,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     from api_service.database import ApiConfigManager
     from agents_service.database import AgentManager
     from apps_service.database import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService, NotesHandler, DiaryService, DiaryHandler
+    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
 
@@ -95,12 +95,13 @@ def _init_services(use_encryption: bool = False) -> dict:
     past_actions_svc = PastActionsService(svc=svc)
 
     app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry)
+    notes_manager = NotesManager(svc=svc)
     app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, agent_app_mgr))
-    notes_handler = NotesHandler(svc=svc)
     app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(past_actions_svc))
     app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
-    app_tab_mgr.register_handler("__notes__", notes_handler)
+    app_tab_mgr.register_handler("__notes__", NotesCommandHandler())
+    app_tab_mgr.register_handler("__note__", NoteTabHandler(notes_manager))
 
     diary_svc = DiaryService(svc=svc)
     time_svc = TimeService(svc=svc)
@@ -115,7 +116,7 @@ def _init_services(use_encryption: bool = False) -> dict:
         "app_tab_mgr": app_tab_mgr,
         "time_svc": time_svc,
         "past_actions_svc": past_actions_svc,
-        "notes_handler": notes_handler,
+        "notes_manager": notes_manager,
         "diary_svc": diary_svc,
     }
 
@@ -133,6 +134,7 @@ def _context(
     agent_can_change_max_past_actions=False,
     show_notes=True,
     show_diary=True,
+    notes_manager=None,
 ) -> str:
     return app_tab_mgr.get_agent_context(
         agent_id,
@@ -142,6 +144,7 @@ def _context(
         agent_can_change_max_past_actions=agent_can_change_max_past_actions,
         show_notes=show_notes,
         show_diary=show_diary,
+        notes_manager=notes_manager,
     )
 
 
@@ -227,6 +230,7 @@ def _handle_input(
         show_context_window=scw,
         context_window=cw,
         agent_can_change_max_past_actions=acc,
+        notes_manager=services.get("notes_manager"),
     )
 
     combined = ctx + "\n\n" + content if ctx else content
@@ -245,8 +249,10 @@ _SHORTCUTS = {
     "list_apps": ("apps", None),
     "list_tabs": ("tabs", None),
     "context": ("context", None),
-    "write_note": ("write_note", None),
-    "extend_note": ("extend_note", None),
+    "create_note": ("create_note", None),
+    "edit_note": ("edit_note", None),
+    "reset_note_lifetime": ("reset_note_lifetime", None),
+    "delete_note": ("delete_note", None),
     "write_diary": ("write_diary", None),
     "list_diary": ("list_diary", None),
     "help": ("help", None),
@@ -289,7 +295,7 @@ def _dispatch(
 
     time_svc = services.get("time_svc")
     past_actions_svc = services.get("past_actions_svc")
-    notes_handler = services.get("notes_handler")
+    notes_manager = services.get("notes_manager")
     diary_svc = services.get("diary_svc")
     max_pa = getattr(agent, "max_past_actions", 15) if agent else 15
     scw = getattr(agent, "show_context_window", False) if agent else False
@@ -307,6 +313,7 @@ def _dispatch(
             agent_can_change_max_past_actions=acc,
             show_notes=sn,
             show_diary=sd,
+            notes_manager=notes_manager,
         )
 
     clean = raw.replace('\\"', '"')
@@ -471,21 +478,113 @@ def _dispatch(
                             agent_id, "assistant", json.dumps(result), time_svc=time_svc,
                         )
                     results.append({"type": "context", "content": _ctx()})
-        elif command in ("write_note", "extend_note"):
-            if not notes_handler:
-                err = {"error": "Notes handler not available"}
+        elif command in ("create_note",):
+            if not notes_manager:
+                err = {"error": "Notes manager not available"}
                 results.append({"type": "error", "data": err})
             else:
-                if command == "extend_note":
-                    max_int = item.get("max_interactions", 10)
-                    notes_handler.extend_note(agent_id, max_interactions=max_int)
-                    result = {"success": True, "type": "notes", "action": "extended", "max_interactions": max_int}
-                else:
-                    content = item.get("content", "")
-                    max_int = item.get("max_interactions", 10)
-                    result = notes_handler.execute({"agent_id": agent_id, "content": content, "max_interactions": max_int})
-                results.append({"type": "result", "command": command, "data": result})
+                title = item.get("title", "")
+                content = item.get("content", "")
+                max_int = item.get("max_interactions", 10)
+                note_id = notes_manager.create_note(agent_id, title=title, content=content, max_interactions=max_int)
+                services["app_tab_mgr"].open_app(
+                    agent_id, "__note__",
+                    tab_label=title or "untitled",
+                    params={"note_id": note_id, "agent_id": agent_id},
+                    is_persistent=False,
+                )
+                result = {"success": True, "type": "notes", "action": "created", "note_id": note_id}
+                results.append({"type": "result", "command": "create_note", "data": result})
+                if past_actions_svc:
+                    past_actions_svc.record_action(
+                        agent_id, "assistant", json.dumps(result),
+                        summary="SUCCESS: Note created", time_svc=time_svc,
+                    )
                 results.append({"type": "context", "content": _ctx()})
+        elif command in ("edit_note",):
+            if not notes_manager:
+                err = {"error": "Notes manager not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                note_id = item.get("note_id", "")
+                content = item.get("content", "")
+                title = item.get("title")
+                if not note_id:
+                    err = {"error": "note_id required for edit_note"}
+                    results.append({"type": "error", "data": err})
+                else:
+                    note = notes_manager.get_note(note_id)
+                    if note is None:
+                        err = {"error": f"Note '{note_id}' not found"}
+                        results.append({"type": "error", "data": err})
+                    else:
+                        notes_manager.update_note(note_id, content=content, title=title)
+                        result = {"success": True, "type": "notes", "action": "updated", "note_id": note_id}
+                        results.append({"type": "result", "command": "edit_note", "data": result})
+                        if past_actions_svc:
+                            past_actions_svc.record_action(
+                                agent_id, "assistant", json.dumps(result),
+                                summary="SUCCESS: Note edited", time_svc=time_svc,
+                            )
+                        results.append({"type": "context", "content": _ctx()})
+        elif command in ("reset_note_lifetime",):
+            if not notes_manager:
+                err = {"error": "Notes manager not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                note_id = item.get("note_id", "")
+                max_int = item.get("max_interactions", 10)
+                if not note_id:
+                    err = {"error": "note_id required for reset_note_lifetime"}
+                    results.append({"type": "error", "data": err})
+                else:
+                    note = notes_manager.get_note(note_id)
+                    if note is None:
+                        err = {"error": f"Note '{note_id}' not found"}
+                        results.append({"type": "error", "data": err})
+                    else:
+                        notes_manager.extend_note(note_id, max_interactions=max_int)
+                        result = {"success": True, "type": "notes", "action": "extended", "note_id": note_id, "max_interactions": max_int}
+                        results.append({"type": "result", "command": "reset_note_lifetime", "data": result})
+                        if past_actions_svc:
+                            past_actions_svc.record_action(
+                                agent_id, "assistant", json.dumps(result),
+                                summary="SUCCESS: Note lifetime reset", time_svc=time_svc,
+                            )
+                        results.append({"type": "context", "content": _ctx()})
+        elif command in ("delete_note",):
+            if not notes_manager:
+                err = {"error": "Notes manager not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                note_id = item.get("note_id", "")
+                if not note_id:
+                    err = {"error": "note_id required for delete_note"}
+                    results.append({"type": "error", "data": err})
+                else:
+                    note = notes_manager.get_note(note_id)
+                    if note is None:
+                        err = {"error": f"Note '{note_id}' not found"}
+                        results.append({"type": "error", "data": err})
+                    else:
+                        notes_manager.delete_note(note_id)
+                        for tab in services["app_tab_mgr"].list_open_apps(agent_id):
+                            if tab.app_id == "__note__":
+                                import json as _j
+                                tp = _j.loads(tab.params) if tab.params else {}
+                                if tp.get("note_id") == note_id:
+                                    try:
+                                        services["app_tab_mgr"].close_tab(tab.id)
+                                    except ValueError:
+                                        pass
+                        result = {"success": True, "type": "notes", "action": "deleted", "note_id": note_id}
+                        results.append({"type": "result", "command": "delete_note", "data": result})
+                        if past_actions_svc:
+                            past_actions_svc.record_action(
+                                agent_id, "assistant", json.dumps(result),
+                                summary="SUCCESS: Note deleted", time_svc=time_svc,
+                            )
+                        results.append({"type": "context", "content": _ctx()})
         elif command in ("write_diary",):
             if not diary_svc:
                 err = {"error": "Diary service not available"}
@@ -526,8 +625,10 @@ def _dispatch(
                 "apps": {"usage": '{"command": "apps"}', "description": "List available apps"},
                 "execute": {"usage": '{"command": "execute", "app_id": "...", "action": {...}}', "description": "Execute an action on an app"},
                 "config": {"usage": '{"command": "config", "max_past_actions": <number>}', "description": "Change agent's max past actions limit (min 3)"},
-                "write_note": {"usage": '{"command": "write_note", "content": "..."}', "description": "Overwrite the notes tab content"},
-                "extend_note": {"usage": '{"command": "extend_note", "max_interactions": <number>}', "description": "Extend the note lifespan (resets counter)"},
+                "create_note": {"usage": '{"command": "create_note", "title": "...", "content": "..."}', "description": "Create a new note"},
+                "edit_note": {"usage": '{"command": "edit_note", "note_id": "...", "content": "..."}', "description": "Edit note content"},
+                "reset_note_lifetime": {"usage": '{"command": "reset_note_lifetime", "note_id": "...", "max_interactions": <number>}', "description": "Reset note lifetime (resets counter)"},
+                "delete_note": {"usage": '{"command": "delete_note", "note_id": "..."}', "description": "Delete a note and close its tab"},
                 "write_diary": {"usage": '{"command": "write_diary", "content": "..."}', "description": "Append to today's diary entry"},
                 "list_diary": {"usage": '{"command": "list_diary", "date": "YYYY-MM-DD"}', "description": "List diary entries (omit date for all)"},
                 "help": {"usage": '{"command": "help"}', "description": "Show this help"},
@@ -616,6 +717,7 @@ def simulation_main() -> None:
         agent_can_change_max_past_actions=acc,
         show_notes=sn,
         show_diary=sd,
+        notes_manager=services.get("notes_manager"),
     )
     agent_info = _oj({
         "type": "session",

@@ -1,5 +1,7 @@
-from core.notes.notes_handler import NotesHandler
+from core.notes.notes_handler import NotesManager, NotesCommandHandler, NoteTabHandler
 
 __all__ = [
-    "NotesHandler",
+    "NotesManager",
+    "NotesCommandHandler",
+    "NoteTabHandler",
 ]

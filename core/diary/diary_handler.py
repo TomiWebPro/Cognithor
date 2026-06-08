@@ -28,6 +28,8 @@ class DiaryHandler(AppHandler):
             f"[Diary]{label}",
             "  Status: Open",
             "",
+            "  Use diary to write about big accomplishments you have achieved throughout your day. Diary is append only — you can only append to today's entry. Diary uses Agent simulated clocktime which might not be the human time scale.",
+            "",
         ]
 
         lines.append(f"  Today: {today}")

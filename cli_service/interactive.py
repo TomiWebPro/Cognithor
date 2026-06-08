@@ -338,18 +338,25 @@ def cmd_agents_menu() -> None:
         agents = agent_mgr.list_agents()
         if agents:
             rows = []
+            agent_app_mgr = CONFIG.get("agent_app_mgr")
             for a in agents:
                 primary = a.model_ref or "-"
                 backup = a.backup_model_ref or "-"
-                cw_flag = "CW" if a.show_context_window else ""
-                can_change = "YES" if a.agent_can_change_max_past_actions else "no"
-                notes_flag = "Notes" if a.show_notes else ""
-                diary_flag = "Diary" if a.show_diary else ""
+                cw_flag = "On" if a.show_context_window else "Off"
+                can_change = "Allowed" if a.agent_can_change_max_past_actions else "Disallowed"
+                notes_flag = "On" if a.show_notes else "Off"
+                diary_flag = "On" if a.show_diary else "Off"
                 rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), can_change, cw_flag, notes_flag, diary_flag, primary, backup])
             print_table(
-                ["ID", "Name", "CW", "Past Actions", "Agent Edit", "CW Tab", "Notes", "Diary", "Model Ref", "Backup Ref"],
+                ["ID", "Name", "Context Window", "Past Actions", "Agent Edit PA", "CW Tab", "Notes", "Diary", "Model Ref", "Backup Ref"],
                 rows,
             )
+            if agent_app_mgr:
+                for a in agents:
+                    if not agent_app_mgr.list_enabled_agent_apps(a.agent_id):
+                        print_warning(f"Agent '{a.name}' has no apps configured — its tools are extremely limited")
+                    if (a.context_window or 0) < 16384:
+                        print_warning(f"Agent '{a.name}' context window is {a.context_window} — too small for complex tasks")
         else:
             print_warning("No agents configured")
 

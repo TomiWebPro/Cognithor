@@ -107,19 +107,19 @@ def print_step(current: int, total: int, description: str) -> None:
 
 
 def print_success(message: str) -> None:
-    console.print(f"  {Text('✓', style='bold green')} {message}")
+    console.print("  ", Text("✓", style="bold green"), " ", message)
 
 
 def print_error(message: str) -> None:
-    console.print(f"  {Text('✗', style='bold red')} {Text(message, style='red')}")
+    console.print("  ", Text("✗", style="bold red"), " ", Text(message, style="red"))
 
 
 def print_warning(message: str) -> None:
-    console.print(f"  {Text('!', style='bold yellow')} {Text(message, style='yellow')}")
+    console.print("  ", Text("!", style="bold yellow"), " ", Text(message, style="yellow"))
 
 
 def print_info(message: str) -> None:
-    console.print(f"  {Text('→', style='bold blue')} {message}")
+    console.print("  ", Text("→", style="bold blue"), " ", message)
 
 
 def print_dim(message: str) -> None:
