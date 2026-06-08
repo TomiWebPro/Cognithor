@@ -28,7 +28,7 @@ def create_app(use_encryption: bool = False):
     from fastapi import FastAPI
     from agents_service import AgentManager
     from apps_service import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, PastActionsService, NotesHandler, DiaryService
+    from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, PastActionsService, NotesHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
