@@ -20,11 +20,17 @@ def _get_passkey_data(config_mgr: ApiConfigManager) -> dict:
     port = config.get("api_port", "8000")
     encryption_available = config_mgr._svc._cipher_available
 
+    row = config_mgr._svc.query_one(
+        "SELECT username FROM api_users ORDER BY id LIMIT 1"
+    )
+    username = row["username"] if row else "admin"
+    password = config_mgr.get_config("frontend_password") or "admin"
+
     return {
         "host": host,
         "port": int(port),
-        "username": "admin",
-        "password": "admin",
+        "username": username,
+        "password": password,
         "encryption_available": encryption_available,
     }
 

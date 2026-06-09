@@ -6,9 +6,12 @@ Breadcrumb navigation, step guidance, and context-sensitive hints.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -1322,8 +1325,8 @@ def _copy_to_clipboard(text: str) -> bool:
         import pyperclip
         pyperclip.copy(text)
         return True
-    except ImportError:
-        pass
+    except Exception as exc:
+        logger.warning("pyperclip failed: %s", exc)
 
     import subprocess
     try:
@@ -1342,8 +1345,8 @@ def _copy_to_clipboard(text: str) -> bool:
             )
             p.communicate(input=text.encode())
             return p.returncode == 0
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("clipboard subprocess failed: %s", exc)
     return False
 
 
