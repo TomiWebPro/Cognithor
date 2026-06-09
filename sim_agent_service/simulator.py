@@ -62,7 +62,6 @@ def _init_services(use_encryption: bool = False) -> dict:
     from apps_service.database import AppRegistry, AgentAppManager
     from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService, TimeHandler, AlarmService, AlarmScheduler, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
-    from apps.list_directory.handler import ListDirectoryHandler
 
     log_db = LogDatabase(
         db_path=str(DATA_DIR / "cognithor_logs.db"),
@@ -96,7 +95,7 @@ def _init_services(use_encryption: bool = False) -> dict:
 
     app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry)
     notes_manager = NotesManager(svc=svc)
-    app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
+    app_tab_mgr.scan_app_handlers(str(APPS_DIR))
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, agent_app_mgr))
     app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(past_actions_svc))
     app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())

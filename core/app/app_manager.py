@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import json
 import logging
 import random
 import string
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from secure_db_service import SecureDbService
@@ -65,6 +67,47 @@ class AppTabManager:
 
     def register_handler(self, app_id: str, handler: AppHandler) -> None:
         self._handlers[app_id] = handler
+
+    def scan_app_handlers(self, apps_dir: str) -> None:
+        apps_path = Path(apps_dir)
+        if not apps_path.is_dir():
+            return
+
+        for entry in sorted(apps_path.iterdir()):
+            if not entry.is_dir():
+                continue
+            app_id = entry.name
+            if self._is_system_app(app_id):
+                continue
+
+            handler_path = entry / "handler.py"
+            if not handler_path.exists():
+                continue
+
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f"{app_id}.handler", str(handler_path)
+                )
+                if spec is None or spec.loader is None:
+                    continue
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                handler_class = None
+                for name in dir(module):
+                    obj = getattr(module, name)
+                    if isinstance(obj, type) and issubclass(obj, AppHandler) and obj is not AppHandler:
+                        handler_class = obj
+                        break
+
+                if handler_class is not None:
+                    handler_instance = handler_class()
+                    self.register_handler(app_id, handler_instance)
+                    logger.info("Auto-registered handler for app '%s' from %s", app_id, handler_path)
+                else:
+                    logger.warning("No AppHandler subclass found in %s", handler_path)
+            except Exception:
+                logger.error("Failed to load handler from %s", handler_path, exc_info=True)
 
     def _init_db(self) -> None:
         self._svc.execute_script("""
@@ -163,8 +206,9 @@ class AppTabManager:
                 raise ValueError(f"App '{app_id}' not found in registry")
 
         tab_id = self._ensure_unique_tab_id()
-        params_json = json.dumps(params) if params else None
-        params_dict = params or {}
+        params_dict = dict(params or {})
+        params_dict.setdefault("agent_id", agent_id)
+        params_json = json.dumps(params_dict)
 
         interface = self._generate_interface(
             app_id, params_dict, tab_label=tab_label, app_record=app_record,

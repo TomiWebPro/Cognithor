@@ -8,6 +8,7 @@ from agents_service import AgentManager, parse_model_ref
 from core.app.app_manager import AppTabManager
 from core.past_action.past_actions import PastActionsService
 from endpoint import EndpointManager, Message
+from apps_service import AgentAppManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class AgentRunner:
         diary_svc: Optional = None,
         notes_manager: Optional = None,
         alarm_svc: Optional = None,
+        agent_app_mgr: Optional[AgentAppManager] = None,
     ):
         self.app_tab_mgr = app_tab_mgr
         self.endpoint_mgr = endpoint_mgr
@@ -32,6 +34,7 @@ class AgentRunner:
         self.diary_svc = diary_svc
         self.notes_manager = notes_manager
         self.alarm_svc = alarm_svc
+        self.agent_app_mgr = agent_app_mgr
 
     def run(
         self,
@@ -120,6 +123,7 @@ class AgentRunner:
         response = self._handle_config_command(response, agent)
         response = self._handle_notes_diary_commands(response, agent, agent_id)
         response, wait_seconds = self._handle_alarm_wait_commands(response, agent, agent_id)
+        response = self._handle_app_commands(response, agent_id)
 
         if self.past_actions_svc is not None:
             self.past_actions_svc.record_action(agent_id, "assistant", response)
@@ -324,3 +328,121 @@ class AgentRunner:
             response = stripped if stripped else response
 
         return response, wait_seconds
+
+    @staticmethod
+    def _parse_json_block(text: str, start: int) -> tuple[dict, int]:
+        depth = 0
+        in_string = False
+        escape = False
+        i = start
+        while i < len(text):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == '\\':
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        block = text[start:i + 1]
+                        return json.loads(block), i + 1
+                elif ch == '"':
+                    in_string = True
+            i += 1
+        raise ValueError("Unmatched opening brace")
+
+    def _handle_app_commands(self, response: str, agent_id: str) -> str:
+        blocks = []
+        i = 0
+        while i < len(response):
+            brace_pos = response.find('{', i)
+            if brace_pos == -1:
+                break
+            try:
+                cmd_obj, end = self._parse_json_block(response, brace_pos)
+                command = cmd_obj.get("command", "").lower()
+                if command in ("execute", "run", "open_app", "close_tab"):
+                    blocks.append((cmd_obj, brace_pos, end, command))
+                i = end
+            except (ValueError, json.JSONDecodeError):
+                i = brace_pos + 1
+
+        if not blocks:
+            return response
+
+        for cmd_obj, start, end, command in reversed(blocks):
+            if command in ("execute", "run"):
+                self._do_execute(cmd_obj, agent_id)
+            elif command == "open_app":
+                self._do_open_app(cmd_obj, agent_id)
+            elif command == "close_tab":
+                self._do_close_tab(cmd_obj, agent_id)
+            response = response[:start] + response[end:]
+
+        return response.strip()
+
+    def _do_execute(self, cmd: dict, agent_id: str) -> None:
+        app_id = cmd.get("app_id", "")
+        action = cmd.get("action", cmd.get("params", {}))
+        if not isinstance(action, dict):
+            action = {}
+
+        # Check if app is installed and enabled for this agent
+        if self.agent_app_mgr is not None:
+            record = self.agent_app_mgr.get_agent_app(agent_id, app_id)
+            if record is None or not record.is_enabled:
+                logger.warning("Agent %s tried to execute uninstalled/disabled app '%s'", agent_id, app_id)
+                return
+
+        handler = self.app_tab_mgr._handlers.get(app_id)
+        if handler is None:
+            logger.warning("No handler for app '%s'", app_id)
+            return
+
+        result = handler.execute(action)
+        if self.past_actions_svc is not None:
+            summary = result.get("past_action_summary")
+            self.past_actions_svc.record_action(
+                agent_id, "assistant", json.dumps(result),
+                app_id=app_id, summary=summary,
+            )
+        logger.info("Agent %s executed app '%s'", agent_id, app_id)
+
+    def _do_open_app(self, cmd: dict, agent_id: str) -> None:
+        app_id = cmd.get("app_id", "")
+        params = cmd.get("params")
+        tab_label = cmd.get("tab_label")
+
+        try:
+            tab_id, interface = self.app_tab_mgr.open_app(
+                agent_id=agent_id,
+                app_id=app_id,
+                tab_label=tab_label,
+                params=params,
+            )
+            if self.past_actions_svc is not None:
+                self.past_actions_svc.record_action(
+                    agent_id, "assistant",
+                    json.dumps({"tab_id": tab_id, "app_id": app_id, "status": "opened"}),
+                    app_id=app_id,
+                )
+            logger.info("Agent %s opened app '%s' (tab %s)", agent_id, app_id, tab_id)
+        except ValueError as e:
+            logger.warning("Agent %s failed to open app '%s': %s", agent_id, app_id, e)
+
+    def _do_close_tab(self, cmd: dict, agent_id: str) -> None:
+        tab_id = cmd.get("tab_id", "")
+        if not tab_id:
+            logger.warning("Agent %s sent close_tab without tab_id", agent_id)
+            return
+        try:
+            self.app_tab_mgr.close_tab(tab_id)
+            logger.info("Agent %s closed tab %s", agent_id, tab_id)
+        except ValueError as e:
+            logger.warning("Agent %s failed to close tab %s: %s", agent_id, tab_id, e)

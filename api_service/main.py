@@ -30,7 +30,6 @@ def create_app(use_encryption: bool = False):
     from apps_service import AppRegistry, AgentAppManager
     from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, TimeHandler, AlarmService, AlarmScheduler, PastActionsService, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
-    from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
     from api_service.database import ApiConfigManager
     from api_service.middleware import EncryptionMiddleware
@@ -74,12 +73,12 @@ def create_app(use_encryption: bool = False):
         app.state.notes_manager = notes_manager
 
         app_tab_mgr = AppTabManager(svc=config_mgr._svc, app_registry=app_registry)
-        app_tab_mgr.register_handler("list_directory", ListDirectoryHandler())
         app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, app.state.agent_app_mgr))
         app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(app.state.past_actions_svc))
         app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())
         app_tab_mgr.register_handler("__notes__", NotesCommandHandler())
         app_tab_mgr.register_handler("__note__", NoteTabHandler(notes_manager))
+        app_tab_mgr.scan_app_handlers(str(apps_dir))
         app.state.app_tab_mgr = app_tab_mgr
 
         app.state.diary_svc = DiaryService(svc=config_mgr._svc)
