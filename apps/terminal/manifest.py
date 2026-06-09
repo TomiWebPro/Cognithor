@@ -5,7 +5,7 @@ MANIFEST = {
                    "Supports running arbitrary commands with timeout and returns stdout, stderr, and exit code.",
     "version": "1.0.0",
     "author": "system",
-    "icon": "⌨️",
+    "icon": "💻",
     "parameters": [
         {
             "name": "command",

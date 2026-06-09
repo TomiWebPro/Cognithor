@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from rich.cells import cell_len
 from rich.text import Text
 from rich.panel import Panel
 from rich.live import Live
@@ -157,10 +158,13 @@ def cmd_status() -> None:
             active_m = ', '.join(m for m, ok in p.active_models.items() if ok) if p.active_models else ''
             models_info = active_m if active_m else (', '.join(p.models) if p.models else '-')
             rows.append([status, p.name, models_info, key])
+        status_w = max(cell_len(r[0]) for r in rows)
         print_table(
             ["", "Provider", "Active Models", "API Key"],
             rows,
             title="Providers",
+            col_widths=[status_w],
+            justify=["center"],
         )
 
     print_empty()
@@ -191,9 +195,12 @@ def cmd_providers_menu() -> None:
                 status = "●" if (any(p.active_models.values()) or p.is_active) else "○"
                 key = "SET" if p.api_key else "NO KEY"
                 rows.append([status, p.name, key])
+            status_w = max(cell_len(r[0]) for r in rows)
             print_table(
                 ["", "Provider", "API Key"],
                 rows,
+                col_widths=[status_w],
+                justify=["center"],
             )
         else:
             print_warning("No providers configured")
@@ -627,10 +634,12 @@ def cmd_apps_menu() -> None:
         if apps:
             rows = []
             for a in apps:
-                avail = "●" if a.is_available else "○"
-                rows.append([avail, a.icon or "◆", a.app_id, a.name, a.version, a.author])
+                icon = a.icon or "◆"
+                if cell_len(icon) != 2:
+                    icon = "●" if a.is_available else "○"
+                rows.append([icon, a.app_id, a.name, a.version, a.author])
             print_table(
-                ["", "", "App ID", "Name", "Version", "Author"],
+                ["", "App ID", "Name", "Version", "Author"],
                 rows,
                 title="Registered Apps",
             )
@@ -873,9 +882,12 @@ def cmd_models_menu(tracker, provider) -> None:
             for i, (mname, mid) in enumerate(items):
                 flag = "●" if provider.active_models.get(mname) else "○"
                 rows.append([flag, mname, mid])
+            status_w = max(cell_len(r[0]) for r in rows)
             print_table(
                 ["", "Name", "Model ID"],
                 rows,
+                col_widths=[status_w],
+                justify=["center"],
             )
         else:
             print_warning("No models configured")

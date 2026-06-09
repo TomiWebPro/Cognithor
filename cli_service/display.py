@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -23,7 +24,7 @@ from rich.progress import (
 from rich import box as rich_box
 from rich.style import Style as RichStyle
 
-console = Console()
+console = Console(emoji_variant="emoji", legacy_windows=False)
 
 _COGNITHOR_LETTERS: dict[str, list[str]] = {
     "C": ["██████  ", "██      ", "██      ", "██      ", "██████  "],
@@ -130,7 +131,13 @@ def print_hint(message: str) -> None:
     console.print(f"    {Text(message, style='dim italic')}")
 
 
-def print_table(headers: list[str], rows: list[list], title: str = "") -> Table:
+def print_table(
+    headers: list[str],
+    rows: list[list],
+    title: str = "",
+    col_widths: Optional[list[Optional[int]]] = None,
+    justify: Optional[list[str]] = None,
+) -> Table:
     table = Table(
         title=title or None,
         box=rich_box.HEAVY_HEAD,
@@ -139,8 +146,15 @@ def print_table(headers: list[str], rows: list[list], title: str = "") -> Table:
         title_style="bold",
         padding=(0, 2),
     )
-    for h in headers:
-        table.add_column(h)
+    for i, h in enumerate(headers):
+        kw = {}
+        if col_widths and i < len(col_widths) and col_widths[i] is not None:
+            kw["width"] = col_widths[i]
+            kw["no_wrap"] = True
+            kw["overflow"] = "ellipsis"
+        if justify and i < len(justify) and justify[i]:
+            kw["justify"] = justify[i]
+        table.add_column(h, **kw)
     for row in rows:
         table.add_row(*[str(c) for c in row])
     console.print(table)
