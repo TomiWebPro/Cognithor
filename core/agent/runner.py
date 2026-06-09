@@ -393,12 +393,22 @@ class AgentRunner:
         if not isinstance(action, dict):
             action = {}
 
-        # Check if app is installed and enabled for this agent
+        action.setdefault("agent_id", agent_id)
+        tab_label = cmd.get("tab_label")
+        if tab_label:
+            action.setdefault("_tab_label", tab_label)
+
         if self.agent_app_mgr is not None:
             record = self.agent_app_mgr.get_agent_app(agent_id, app_id)
             if record is None or not record.is_enabled:
                 logger.warning("Agent %s tried to execute uninstalled/disabled app '%s'", agent_id, app_id)
                 return
+            if record.config:
+                try:
+                    config = json.loads(record.config)
+                    action.setdefault("_app_config", config)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
         handler = self.app_tab_mgr._handlers.get(app_id)
         if handler is None:
@@ -406,6 +416,7 @@ class AgentRunner:
             return
 
         result = handler.execute(action)
+        self.app_tab_mgr.process_tab_operations(result, agent_id)
         if self.past_actions_svc is not None:
             summary = result.get("past_action_summary")
             self.past_actions_svc.record_action(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import shlex
 from typing import Optional
 
 from core.app.app_manager import AppHandler
@@ -56,7 +55,6 @@ def execute_command(command: str, timeout_ms: int = 30000) -> dict:
 def generate_terminal_interface(
     params: dict,
     tab_label: Optional[str] = None,
-    result: Optional[dict] = None,
 ) -> str:
     label = f" ({tab_label})" if tab_label else ""
     lines = [
@@ -65,36 +63,27 @@ def generate_terminal_interface(
         "",
     ]
 
-    if result is None:
-        cmd = params.get("command", "")
-        if cmd:
-            timeout = params.get("timeout", 30000)
-            result = execute_command(cmd, timeout_ms=int(timeout))
+    command = params.get("_last_command")
+    stdout = params.get("_last_stdout")
+    stderr = params.get("_last_stderr")
+    exit_code = params.get("_last_exit_code")
 
-    if result and result.get("success"):
-        lines.append(f"  $ {result['command']}")
-        lines.append(f"  Exit code: {result['exit_code']}")
-        if result.get("stdout"):
+    if command is not None:
+        lines.append(f"  $ {command}")
+        if exit_code is not None:
+            lines.append(f"  Exit code: {exit_code}")
+        if stdout:
             lines.append("")
             lines.append("  stdout:")
-            for line in result["stdout"].splitlines():
+            for line in stdout.splitlines():
                 lines.append(f"    {line}")
-        if result.get("stderr"):
+        if stderr:
             lines.append("")
             lines.append("  stderr:")
-            for line in result["stderr"].splitlines():
+            for line in stderr.splitlines():
                 lines.append(f"    {line}")
-    elif result:
-        lines.append(f"  Command: {result.get('command', '')}")
-        lines.append(f"  Error: {result.get('error', 'Unknown error')}")
-        if result.get("stdout"):
-            lines.append("  stdout:")
-            for line in result["stdout"].splitlines():
-                lines.append(f"    {line}")
-        if result.get("stderr"):
-            lines.append("  stderr:")
-            for line in result["stderr"].splitlines():
-                lines.append(f"    {line}")
+    else:
+        lines.append("  No command executed yet. Run a command to see output here.")
 
     return "\n".join(lines)
 
@@ -110,7 +99,22 @@ class TerminalHandler(AppHandler):
     def execute(self, params: dict) -> dict:
         command = params.get("command", "")
         timeout = params.get("timeout", 30000)
-        return execute_command(command, timeout_ms=int(timeout))
+        result = execute_command(command, timeout_ms=int(timeout))
+
+        tab_label = params.get("_tab_label")
+        update_spec = {
+            "app_id": "terminal",
+            "params": {
+                    "_last_command": result.get("command", command),
+                    "_last_stdout": result.get("stdout", ""),
+                    "_last_stderr": result.get("stderr", ""),
+                    "_last_exit_code": result.get("exit_code"),
+                },
+            }
+        if tab_label:
+            update_spec["tab_label"] = tab_label
+        result["_update_tabs"] = [update_spec]
+        return result
 
     def get_action_summary(self, params: dict, result: dict) -> Optional[str]:
         if result.get("success"):

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from secure_db_service import SecureDbService
-from apps_service import AppRegistry, AppRecord
+from apps_service import AppRegistry, AppRecord, AgentAppManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,35 @@ def generate_tab_id() -> str:
     return ''.join(random.choices(chars, k=6))
 
 
+class AppHandlerContext:
+    """Lightweight context passed to every app handler for controlled service access."""
+    def __init__(self, agent_app_mgr: Optional[AgentAppManager] = None):
+        self._agent_app_mgr = agent_app_mgr
+
+    def get_app_config(self, agent_id: str, app_id: str) -> Optional[dict]:
+        if self._agent_app_mgr is None:
+            return None
+        record = self._agent_app_mgr.get_agent_app(agent_id, app_id)
+        if record is None or not record.config:
+            return None
+        try:
+            return json.loads(record.config)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+
 class AppHandler:
+    def __init__(self, context: Optional[AppHandlerContext] = None):
+        self._context = context or AppHandlerContext()
+
+    @property
+    def ctx(self) -> AppHandlerContext:
+        return self._context
+
+    @staticmethod
+    def get_config_schema() -> list[dict]:
+        return []
+
     def generate_interface(
         self,
         params: dict,
@@ -59,9 +87,10 @@ class AgentOpenAppRecord:
 
 
 class AppTabManager:
-    def __init__(self, svc: SecureDbService, app_registry: AppRegistry):
+    def __init__(self, svc: SecureDbService, app_registry: AppRegistry, agent_app_mgr: Optional[AgentAppManager] = None):
         self._svc = svc
         self._app_registry = app_registry
+        self._agent_app_mgr = agent_app_mgr
         self._handlers: dict[str, AppHandler] = {}
         self._init_db()
 
@@ -101,7 +130,11 @@ class AppTabManager:
                         break
 
                 if handler_class is not None:
-                    handler_instance = handler_class()
+                    ctx = AppHandlerContext(agent_app_mgr=self._agent_app_mgr)
+                    try:
+                        handler_instance = handler_class(context=ctx)
+                    except TypeError:
+                        handler_instance = handler_class()
                     self.register_handler(app_id, handler_instance)
                     logger.info("Auto-registered handler for app '%s' from %s", app_id, handler_path)
                 else:
@@ -384,6 +417,24 @@ class AppTabManager:
                     agent_id, app_id, is_persistent=True,
                     params={"agent_id": agent_id},
                 )
+
+    def process_tab_operations(self, result: dict, agent_id: str) -> None:
+        for tab_spec in result.get("_open_tabs", []):
+            self.open_app(
+                agent_id=agent_id,
+                app_id=tab_spec.get("app_id", ""),
+                tab_label=tab_spec.get("tab_label"),
+                params=tab_spec.get("params"),
+            )
+        for tab_spec in result.get("_update_tabs", []):
+            existing = self._find_tab_by_app_and_label(
+                agent_id,
+                tab_spec.get("app_id", ""),
+                tab_spec.get("tab_label"),
+            )
+            if existing is not None:
+                self.update_tab_params(existing.id, tab_spec.get("params", {}))
+                self.refresh_interface(existing.id)
 
     def refresh_interface(self, tab_id: str) -> Optional[str]:
         record = self.get_open_app(tab_id)

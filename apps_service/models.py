@@ -25,6 +25,7 @@ class AppManifest:
     outputs: list[AppParameter] = field(default_factory=list)
     requires_confirmation: bool = False
     timeout_seconds: int = 30
+    config_schema: list[dict] = field(default_factory=list)
 
 
 @dataclass

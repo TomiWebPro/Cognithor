@@ -72,7 +72,7 @@ def create_app(use_encryption: bool = False):
         notes_manager = NotesManager(svc=config_mgr._svc)
         app.state.notes_manager = notes_manager
 
-        app_tab_mgr = AppTabManager(svc=config_mgr._svc, app_registry=app_registry)
+        app_tab_mgr = AppTabManager(svc=config_mgr._svc, app_registry=app_registry, agent_app_mgr=app.state.agent_app_mgr)
         app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, app.state.agent_app_mgr))
         app_tab_mgr.register_handler("__past_actions__", PastActionsHandler(app.state.past_actions_svc))
         app_tab_mgr.register_handler("__context_window__", ContextWindowHandler())

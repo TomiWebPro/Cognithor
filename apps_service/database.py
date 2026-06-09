@@ -43,6 +43,7 @@ def _manifest_from_module(module) -> AppManifest:
             outputs=[AppParameter(**o) if isinstance(o, dict) else o for o in raw.get("outputs", [])],
             requires_confirmation=raw.get("requires_confirmation", False),
             timeout_seconds=raw.get("timeout_seconds", 30),
+            config_schema=raw.get("config_schema", []),
         )
     return raw
 
@@ -59,6 +60,7 @@ def _manifest_to_json(manifest: AppManifest) -> str:
         "outputs": [vars(o) for o in manifest.outputs],
         "requires_confirmation": manifest.requires_confirmation,
         "timeout_seconds": manifest.timeout_seconds,
+        "config_schema": manifest.config_schema,
     })
 
 
@@ -190,6 +192,8 @@ class AppRegistry:
         if not apps_path.is_dir():
             return registered
 
+        seen_names: set[str] = set()
+
         for entry in sorted(apps_path.iterdir()):
             if not entry.is_dir():
                 continue
@@ -208,6 +212,9 @@ class AppRegistry:
                     continue
                 manifest = _manifest_from_module(module)
                 manifest.type = "builtin"
+                if manifest.name in seen_names:
+                    logger.warning("Duplicate app name '%s' in %s", manifest.name, entry)
+                seen_names.add(manifest.name)
                 existing = self.get_app(manifest.app_id)
                 if existing is not None:
                     self.update_app(

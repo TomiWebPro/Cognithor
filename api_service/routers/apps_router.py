@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from apps_service import AppRegistry, AgentAppManager, validate_icon
@@ -49,6 +51,25 @@ async def get_app(
     if record is None:
         raise HTTPException(status_code=404, detail="App not found")
     return vars(record)
+
+
+@router.get("/apps/{app_id}/config-schema")
+async def get_app_config_schema(
+    app_id: str,
+    app_registry: AppRegistry = Depends(_get_app_registry),
+    _: str = Depends(get_current_user),
+):
+    record = app_registry.get_app(app_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="App not found")
+    schema = []
+    if record.manifest:
+        try:
+            manifest = json.loads(record.manifest) if isinstance(record.manifest, str) else record.manifest
+            schema = manifest.get("config_schema", [])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return {"app_id": app_id, "config_schema": schema}
 
 
 @router.post("/apps")

@@ -84,6 +84,7 @@ MANIFEST = {
 | `outputs` | `list[dict]` | `[]` | Same shape as parameters |
 | `requires_confirmation` | `bool` | `False` | Reserved for future safety checks |
 | `timeout_seconds` | `int` | `30` | Reserved for future execution timeout |
+| `config_schema` | `list[dict]` | `[]` | Declares per-agent configuration fields. Each entry: `name` (str), `type` (str: `string`/`password`/`integer`/`boolean`), `label` (str), `description` (str), `required` (bool), `default` (any). Used by the CLI configuration form. |
 
 ---
 
@@ -137,7 +138,8 @@ If not overridden, the default reads `result.get("past_action_summary")`.
 ### Side Effects — Opening / Updating Other Tabs
 
 Your `execute()` can signal the system to open or update other tabs by
-including special keys in the return dict:
+including special keys in the return dict. This works in both the
+simulator and the production runner:
 
 ```python
 {
@@ -150,6 +152,27 @@ including special keys in the return dict:
     ],
 }
 ```
+
+### `get_config_schema() -> list[dict]` (optional static method)
+
+Override to declare what per-agent configuration your app accepts. This is
+an alternative to `config_schema` in the manifest dict — the handler-level
+version can compute the schema dynamically:
+
+```python
+class MyAppHandler(AppHandler):
+    @staticmethod
+    def get_config_schema() -> list[dict]:
+        return [
+            {"name": "api_key", "type": "password", "label": "API Key",
+             "description": "Provider API key", "required": True},
+            {"name": "max_results", "type": "integer", "label": "Max Results",
+             "required": False, "default": 10},
+        ]
+```
+
+The CLI reads this schema when the user opens the "Configure app for agent"
+menu, and renders a form for each field.
 
 ---
 
@@ -172,14 +195,47 @@ need service injection.
 ### Agent ID Awareness
 
 Every handler automatically receives `agent_id` in its `params` dict.
-This is injected by `AppTabManager.open_app()` — you don't need to pass
-it explicitly. Your handler can use it for per-agent state isolation:
+This is injected by `AppTabManager.open_app()` and `AgentRunner._do_execute()`
+— you don't need to pass it explicitly. Your handler can use it for
+per-agent state isolation:
 
 ```python
 def execute(self, params: dict) -> dict:
     agent_id = params.get("agent_id")
     # ... do something specific to this agent
 ```
+
+### Per-Agent App Configuration
+
+Apps can declare a `config_schema` in `manifest.py` (see field reference).
+The admin sets per-agent values via the CLI "Configure app for agent" menu
+or the `PUT /agents/{id}/apps/{id}/config` API.
+
+Your handler can access the config in two ways:
+
+**1. During `execute()`** — the config is automatically injected into
+params as `_app_config`:
+
+```python
+def execute(self, params: dict) -> dict:
+    config = params.get("_app_config", {})
+    api_key = config.get("api_key", "")
+```
+
+**2. Anywhere in the handler** — via `self.ctx.get_app_config()`:
+
+```python
+class MyAppHandler(AppHandler):
+    def generate_interface(self, params: dict, tab_label=None) -> str:
+        agent_id = params.get("agent_id", "")
+        config = self.ctx.get_app_config(agent_id, "my_app")
+        # ...
+```
+
+The `AppHandlerContext` object (`self.ctx`) is injected automatically when
+the handler is instantiated by `scan_app_handlers()`. It provides
+controlled access to core services without coupling your app to the
+internals of Cognithor.
 
 ### Tab Lifecycle
 
@@ -208,6 +264,45 @@ is called, and the result is recorded in the agent's past actions.
 
 Before executing, the system checks that the app is installed AND enabled
 for the calling agent via `AgentAppManager`.
+
+### Non-Blocking / Deferred Execution
+
+All app execution is synchronous from the runner's perspective — the
+handler's `execute()` runs to completion before the agent loop continues.
+However, because tabs persist between turns, you can build a
+"deferred-result" pattern:
+
+1. Your `execute()` performs kick-off work, stores a reference in a tab,
+   and returns immediately.
+2. On the next turn, the agent sees the tab (via context rebuild) and
+   can check the result or run a follow-up command.
+
+```python
+def execute(self, params: dict) -> dict:
+    job_id = start_background_job(params.get("input", ""))
+    return {
+        "success": True,
+        "job_id": job_id,
+        "past_action_summary": f"Started job {job_id}",
+        "_open_tabs": [
+            {"app_id": "my_app", "tab_label": f"Job {job_id}",
+             "params": {"job_id": job_id, "status": "running", "agent_id": params["agent_id"]}},
+        ],
+    }
+```
+
+If your app needs the runner to pause before the next LLM call (e.g.,
+waiting for an external condition), include `_wait_seconds` in the result:
+
+```python
+return {
+    "success": True,
+    "status": "waiting_for_data",
+    "_wait_seconds": 5,
+}
+```
+
+This is the same mechanism used by the `wait` command.
 
 ---
 
@@ -250,6 +345,42 @@ agent's context window update in real time.
 
 The simulator behaves identically to the production runner for app
 execution, so once it works here it will work in production.
+
+---
+
+## Configuring Apps via the CLI
+
+The CLI provides a "Configure app for agent" menu under App Management.
+When selected, it reads the app's `config_schema` (from `manifest.py`)
+and renders a dynamic form for each field.
+
+### Supported Field Types
+
+| Type | CLI Input | Example |
+|------|-----------|---------|
+| `string` | Text prompt with default | `API Key [sk-...]:` |
+| `password` | Text prompt (echo visible) | `Secret Key:` |
+| `integer` | Numeric input | `Max Results [10]:` |
+| `boolean` | Confirm prompt | `Enable logging? [y/N]:` |
+
+### Example `config_schema` in `manifest.py`
+
+```python
+MANIFEST = {
+    ...
+    "config_schema": [
+        {"name": "api_key", "type": "password", "label": "API Key",
+         "description": "Provider API key", "required": True},
+        {"name": "max_results", "type": "integer", "label": "Max Results",
+         "required": False, "default": 10},
+        {"name": "verbose", "type": "boolean", "label": "Verbose Logging",
+         "required": False, "default": False},
+    ],
+}
+```
+
+The configured values are stored per-agent in the `agent_apps.config`
+column and injected into `execute()` params as `_app_config`.
 
 ---
 

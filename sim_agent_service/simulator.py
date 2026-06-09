@@ -93,7 +93,7 @@ def _init_services(use_encryption: bool = False) -> dict:
 
     past_actions_svc = PastActionsService(svc=svc)
 
-    app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry)
+    app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry, agent_app_mgr=agent_app_mgr)
     notes_manager = NotesManager(svc=svc)
     app_tab_mgr.scan_app_handlers(str(APPS_DIR))
     app_tab_mgr.register_handler("__list_apps__", ListAppsHandler(app_registry, agent_app_mgr))
@@ -194,23 +194,7 @@ def _handle_close(args: dict, services: dict, agent_id: str) -> Optional[dict]:
 
 
 def _process_tab_operations(result: dict, services: dict, agent_id: str) -> None:
-    app_tab_mgr = services["app_tab_mgr"]
-    for tab_spec in result.get("_open_tabs", []):
-        app_tab_mgr.open_app(
-            agent_id=agent_id,
-            app_id=tab_spec.get("app_id", ""),
-            tab_label=tab_spec.get("tab_label"),
-            params=tab_spec.get("params"),
-        )
-    for tab_spec in result.get("_update_tabs", []):
-        existing = app_tab_mgr._find_tab_by_app_and_label(
-            agent_id,
-            tab_spec.get("app_id", ""),
-            tab_spec.get("tab_label", ""),
-        )
-        if existing is not None:
-            app_tab_mgr.update_tab_params(existing.id, tab_spec.get("params", {}))
-            app_tab_mgr.refresh_interface(existing.id)
+    services["app_tab_mgr"].process_tab_operations(result, agent_id)
 
 
 def _handle_input(

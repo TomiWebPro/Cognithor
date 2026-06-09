@@ -114,7 +114,11 @@ def _init_services(use_encryption: bool = False) -> None:
     CONFIG["app_registry"] = app_registry
     CONFIG["agent_app_mgr"] = AgentAppManager(svc=svc)
 
-    from core import TimeService, DiaryService, AlarmService, AlarmScheduler
+    from core import AppTabManager, TimeService, DiaryService, AlarmService, AlarmScheduler
+
+    app_tab_mgr = AppTabManager(svc=svc, app_registry=app_registry, agent_app_mgr=CONFIG["agent_app_mgr"])
+    app_tab_mgr.scan_app_handlers(str(APPS_DIR))
+    CONFIG["app_tab_mgr"] = app_tab_mgr
     CONFIG["time_svc"] = TimeService(svc=svc)
     CONFIG["diary_svc"] = DiaryService(svc=svc)
     CONFIG["alarm_svc"] = AlarmService(svc=svc, time_svc=CONFIG["time_svc"])
@@ -655,16 +659,17 @@ def cmd_apps_menu() -> None:
                 "Uninstall app from an agent",
                 "Toggle enable/disable for an agent",
                 "List apps installed for an agent",
+                "Configure app for an agent",
                 "Toggle tab persistence",
                 "Rescan apps directory",
                 "Back to main menu",
             ],
             title="Select an action",
-            default=6,
+            default=7,
             hint="Manage agent applications and tools",
         )
 
-        if choice == 7:
+        if choice == 8:
             return
 
         if choice == 0:
@@ -834,6 +839,96 @@ def cmd_apps_menu() -> None:
                 continue
 
             glist = [f"{g.agent_id} — {g.name}" for g in agents]
+            gidx = choose(glist, title="Select agent to configure")
+            agent = agents[gidx]
+
+            import json as _json
+
+            installed = agent_app_mgr.list_agent_apps(agent.agent_id)
+            if not installed:
+                print_warning(f"No apps installed for '{agent.name}'")
+                pause()
+                continue
+
+            ilist = [f"{i.app_id}" for i in installed]
+            iidx = choose(ilist, title=f"Select app to configure for '{agent.name}'")
+            target = installed[iidx]
+
+            app_record = app_registry.get_app(target.app_id)
+            config_schema = []
+            if app_record and app_record.manifest:
+                try:
+                    m = _json.loads(app_record.manifest) if isinstance(app_record.manifest, str) else app_record.manifest
+                    config_schema = m.get("config_schema", [])
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+
+            if not config_schema:
+                print_warning(f"App '{target.app_id}' has no configurable settings")
+                pause()
+                continue
+
+            current_config = {}
+            if target.config:
+                try:
+                    current_config = _json.loads(target.config) if isinstance(target.config, str) else target.config
+                except (_json.JSONDecodeError, TypeError):
+                    current_config = {}
+
+            print_info(f"Configuring '{target.app_id}' for '{agent.name}'")
+            values = {}
+            for field in config_schema:
+                fname = field.get("name", "")
+                ftype = field.get("type", "string")
+                flabel = field.get("label", fname)
+                fdesc = field.get("description", "")
+                freq = field.get("required", False)
+                fdefault = field.get("default")
+                current = current_config.get(fname, fdefault)
+
+                prompt = flabel
+                if freq:
+                    prompt += " *"
+                if fdesc:
+                    prompt += f" ({fdesc})"
+
+                if ftype == "boolean":
+                    from cli_service.display import confirm as _confirm
+                    val = _confirm(prompt, default=bool(current) if current is not None else False)
+                elif ftype == "integer":
+                    default_str = str(current) if current is not None else ""
+                    raw = input(f"  {prompt}: ") if True else ""
+                    if not raw and current is not None:
+                        val = current
+                    else:
+                        try:
+                            val = int(raw)
+                        except (ValueError, TypeError):
+                            val = current if current is not None else 0
+                else:
+                    default_str = str(current) if current is not None else ""
+                    raw = input(f"  {prompt} [{default_str}]: ").strip()
+                    if not raw and current is not None:
+                        val = current
+                    else:
+                        val = raw or default_str
+
+                values[fname] = val
+
+            if confirm("Save configuration?", default=True):
+                agent_app_mgr.set_app_config(agent.agent_id, target.app_id, _json.dumps(values))
+                print_success(f"Configuration saved for '{target.app_id}' on '{agent.name}'")
+            else:
+                print_warning("Cancelled")
+            pause()
+
+        elif choice == 6:
+            if not agents:
+                print_warning("No agents created yet.")
+                pause()
+                continue
+
+            glist = [f"{g.agent_id} — {g.name}" for g in agents]
             gidx = choose(glist, title="Select agent to manage tabs")
             agent = agents[gidx]
 
@@ -863,7 +958,10 @@ def cmd_apps_menu() -> None:
             print_success(f"Tab '{target.app_id}' is now {status}")
             pause()
 
-        elif choice == 6:
+        elif choice == 7:
+            app_tab_mgr = CONFIG.get("app_tab_mgr")
+            if app_tab_mgr is not None:
+                app_tab_mgr.scan_app_handlers(str(APPS_DIR))
             count = len(app_registry.scan_apps_directory(str(APPS_DIR)))
             print_success(f"Rescanned apps directory. Found {count} apps.")
             pause()
