@@ -258,6 +258,8 @@ All agent endpoints require authentication and use encrypted payloads. Each agen
 | `show_context_window` | bool | true | Show token usage tab |
 | `show_notes` | bool | true | Show Notes tab (temporal memory, overwritable, auto-expires) |
 | `show_diary` | bool | true | Show Diary tab (long-term memory, append-only) |
+| `show_time` | bool | true | Show Time tab (simulated clock, alarm commands, pending alarms) |
+| `status` | string | "active" | Agent status: `"active"` = running, `"idle"` = sleeping (woken by scheduler) |
 
 ### Notes
 
@@ -331,6 +333,68 @@ Response:
 }
 ```
 
+### Alarms
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/agents/{agent_id}/alarms` | List all alarms for an agent |
+| `POST` | `/agents/{agent_id}/alarms` | Create a new alarm |
+| `DELETE` | `/alarms/{alarm_id}` | Cancel a non-triggered alarm |
+
+**Create alarm:**
+```json
+POST /agents/{agent_id}/alarms
+{
+  "time": "2026-06-09T10:00:00+00:00",
+  "time_type": "agent",
+  "message": "check inventory"
+}
+
+Response:
+{
+  "agent_id": "aB3xK9",
+  "alarm_id": "m61amau0",
+  "time": "2026-06-09T10:00:00+00:00",
+  "message": "check inventory"
+}
+```
+
+`time_type` can be `"agent"` (default, compared against simulated clock) or `"real"` (converted to agent time via ratio).
+
+**List alarms:**
+```json
+GET /agents/{agent_id}/alarms
+
+Response:
+{
+  "agent_id": "aB3xK9",
+  "alarms": [
+    {
+      "id": "m61amau0",
+      "agent_id": "aB3xK9",
+      "alarm_time": "2026-06-09T10:00:00.123456+00:00",
+      "time_type": "agent",
+      "message": "check inventory",
+      "triggered": false,
+      "created_at": "2026-06-09T08:00:00"
+    }
+  ]
+}
+```
+
+**Cancel alarm:**
+```json
+DELETE /alarms/m61amau0
+
+Response:
+{
+  "alarm_id": "m61amau0",
+  "status": "cancelled"
+}
+```
+
+Returns 404 if alarm is already triggered or does not exist.
+
 ### Settings
 
 All settings endpoints require authentication and use encrypted payloads.
@@ -381,6 +445,11 @@ When toggling database encryption, all three databases (`cognithor.db`, `cognith
 | `api_service/routers/onboarding_router.py` | Passkey + QR code generation for frontend onboarding |
 | `api_service/routers/notes_router.py` | Notes CRUD (`GET/PUT /agents/{id}/notes`) |
 | `api_service/routers/diary_router.py` | Diary append + list (`POST/GET /agents/{id}/diary`) |
+| `api_service/routers/alarms_router.py` | Alarm CRUD (`GET/POST /agents/{id}/alarms`, `DELETE /alarms/{id}`) |
+| `core/time/time_service.py` | Configurable simulated clock with epoch mapping and ratio |
+| `core/time/time_handler.py` | `[Time]` system persistent tab — clock display, alarm commands |
+| `core/time/alarm_service.py` | Alarm CRUD with agent/real time conversion, trigger detection |
+| `core/time/scheduler.py` | Background daemon thread — polls alarms every 1s, wakes idle agents |
 
 ## Error Codes
 

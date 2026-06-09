@@ -28,7 +28,7 @@ def create_app(use_encryption: bool = False):
     from fastapi import FastAPI
     from agents_service import AgentManager
     from apps_service import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, PastActionsService, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
+    from core import AppTabManager, ListAppsHandler, PastActionsHandler, TimeService, TimeHandler, AlarmService, AlarmScheduler, PastActionsService, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
     from endpoint import EndpointManager
@@ -36,6 +36,7 @@ def create_app(use_encryption: bool = False):
     from api_service.middleware import EncryptionMiddleware
     from api_service.routers import (
         agents_router,
+        alarms_router,
         apps_router,
         auth_router,
         base,
@@ -83,7 +84,15 @@ def create_app(use_encryption: bool = False):
 
         app.state.diary_svc = DiaryService(svc=config_mgr._svc)
         app.state.time_svc = TimeService(svc=config_mgr._svc)
+        app.state.alarm_svc = AlarmService(svc=config_mgr._svc, time_svc=app.state.time_svc)
+        app.state.alarm_scheduler = AlarmScheduler(
+            svc=config_mgr._svc,
+            time_svc=app.state.time_svc,
+            agent_mgr=app.state.agent_mgr,
+        )
+        app.state.alarm_scheduler.start()
         app_tab_mgr.register_handler("__diary__", DiaryHandler(app.state.diary_svc, app.state.time_svc))
+        app_tab_mgr.register_handler("__time__", TimeHandler(app.state.time_svc, app.state.alarm_svc))
 
         app.state.encryption_in_progress = False
 
@@ -98,6 +107,9 @@ def create_app(use_encryption: bool = False):
 
         yield
 
+        if app.state.alarm_scheduler.is_running:
+            app.state.alarm_scheduler.stop()
+
     app = FastAPI(
         title="Cognithor API",
         description="REST API for the Cognithor autonomous agent system",
@@ -107,6 +119,7 @@ def create_app(use_encryption: bool = False):
 
     app.include_router(base.router)
     app.include_router(auth_router.router)
+    app.include_router(alarms_router.router)
     app.include_router(onboarding_router.router)
     app.include_router(security_router.router)
     app.include_router(settings_router.router)

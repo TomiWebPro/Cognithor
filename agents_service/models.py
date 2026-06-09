@@ -25,5 +25,7 @@ class AgentRecord:
     show_context_window: bool = True
     show_notes: bool = True
     show_diary: bool = True
+    show_time: bool = True
+    status: str = "active"
     created_at: Optional[str] = None
     updated_at: Optional[str] = None

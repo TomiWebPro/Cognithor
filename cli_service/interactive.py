@@ -113,9 +113,17 @@ def _init_services(use_encryption: bool = False) -> None:
     CONFIG["app_registry"] = app_registry
     CONFIG["agent_app_mgr"] = AgentAppManager(svc=svc)
 
-    from core import TimeService, DiaryService
+    from core import TimeService, DiaryService, AlarmService, AlarmScheduler
     CONFIG["time_svc"] = TimeService(svc=svc)
     CONFIG["diary_svc"] = DiaryService(svc=svc)
+    CONFIG["alarm_svc"] = AlarmService(svc=svc, time_svc=CONFIG["time_svc"])
+    alarm_scheduler = AlarmScheduler(
+        svc=svc,
+        time_svc=CONFIG["time_svc"],
+        agent_mgr=CONFIG["agent_mgr"],
+    )
+    alarm_scheduler.start()
+    CONFIG["alarm_scheduler"] = alarm_scheduler
 
     print_empty()
     print_step(3, 3, "Initialization complete")
@@ -346,9 +354,10 @@ def cmd_agents_menu() -> None:
                 can_change = "Allowed" if a.agent_can_change_max_past_actions else "Disallowed"
                 notes_flag = "On" if a.show_notes else "Off"
                 diary_flag = "On" if a.show_diary else "Off"
-                rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), can_change, cw_flag, notes_flag, diary_flag, primary, backup])
+                time_flag = "On" if getattr(a, "show_time", True) else "Off"
+                rows.append([a.agent_id, a.name, str(a.context_window), str(a.max_past_actions), can_change, cw_flag, notes_flag, diary_flag, time_flag, primary, backup])
             print_table(
-                ["ID", "Name", "Context Window", "Past Actions", "Agent Edit PA", "CW Tab", "Notes", "Diary", "Model Ref", "Backup Ref"],
+                ["ID", "Name", "Context Window", "Past Actions", "Agent Edit PA", "CW Tab", "Notes", "Diary", "Time", "Model Ref", "Backup Ref"],
                 rows,
             )
             if agent_app_mgr:
@@ -370,6 +379,7 @@ def cmd_agents_menu() -> None:
                 "Toggle agent can change past actions limit",
                 "Toggle notes tab",
                 "Toggle diary feature",
+                "Toggle time tab",
                 "View diary entries",
                 "Link primary model",
                 "Link backup model",
@@ -377,11 +387,11 @@ def cmd_agents_menu() -> None:
                 "Back to main menu",
             ],
             title="Select an action",
-            default=11,
+            default=12,
             hint="Manage autonomous agents",
         )
 
-        if choice == 11:
+        if choice == 12:
             return
 
         if choice == 0:
@@ -520,6 +530,20 @@ def cmd_agents_menu() -> None:
                 print_warning("No agents")
                 pause()
                 continue
+            alist = [f"{a.agent_id} — {a.name} (time={'ON' if getattr(a, 'show_time', True) else 'OFF'})" for a in agents]
+            aidx = choose(alist, title="Select agent to toggle time tab")
+            agent = agents[aidx]
+            new_val = not getattr(agent, "show_time", True)
+            agent_mgr.update_agent(agent.agent_id, show_time=new_val)
+            status = "ON" if new_val else "OFF"
+            print_success(f"Time tab for '{agent.name}' → {status}")
+
+        elif choice == 8:
+            agents = agent_mgr.list_agents()
+            if not agents:
+                print_warning("No agents")
+                pause()
+                continue
             alist = [f"{a.agent_id} — {a.name}" for a in agents]
             aidx = choose(alist, title="Select agent to view diary")
             agent = agents[aidx]
@@ -540,7 +564,7 @@ def cmd_agents_menu() -> None:
             _pt(["Date", "Content", "Updated"], rows, title=f"Diary — {agent.name}")
             pause()
 
-        elif choice == 8:
+        elif choice == 9:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")
@@ -555,7 +579,7 @@ def cmd_agents_menu() -> None:
             agent_mgr.update_agent(agent.agent_id, model_ref=ref)
             print_success(f"Linked {agent.agent_id} primary → {ref}")
 
-        elif choice == 9:
+        elif choice == 10:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")
@@ -570,7 +594,7 @@ def cmd_agents_menu() -> None:
             agent_mgr.update_agent(agent.agent_id, backup_model_ref=ref)
             print_success(f"Linked {agent.agent_id} backup → {ref}")
 
-        elif choice == 10:
+        elif choice == 11:
             agents = agent_mgr.list_agents()
             if not agents:
                 print_warning("No agents")

@@ -9,7 +9,7 @@ This project provides a backend API and CLI for creating an autonomous agent sys
 - **secure_db_service/** — Fully implemented. SQLite wrapper with WAL mode, retry logic, optional SQLCipher encryption, keyring-backed key management.
 - **log_service/** — Fully implemented. Structured logging to SQLite with four levels, auto caller detection.
 - **onboarding/** — Fully implemented. `setup.py` initialises all three service databases and seeds defaults.
-- **core/** — Fully implemented. Context window management (`AppTabManager`), configurable time progression (`TimeService`), and rolling past-action history (`PastActionsService`).
+- **core/** — Fully implemented. Context window management (`AppTabManager`), configurable time progression (`TimeService`), rolling past-action history (`PastActionsService`), notes (temporal memory), diary (long-term memory), alarm system (`AlarmService`), background scheduler daemon (`AlarmScheduler`), and agent runner with alarm/wait/note/diary command parsing (`AgentRunner`).
 - **agents/** — Empty (placeholder for future agent implementations).
 - **apps/** — App modules in development: `list_directory` handler exists; `read_from_file`, `write_to_file`, `terminal` manifests created.
 

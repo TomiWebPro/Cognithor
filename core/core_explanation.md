@@ -1,6 +1,6 @@
 # Core Module — Architecture & Vision
 
-The `core` package provides the runtime services that drive agent conversations: context window management, open-app tab system, past-action tracking with structured summaries, and configurable time progression.
+The `core` package provides the runtime services that drive agent conversations: context window management, open-app tab system, past-action tracking with structured summaries, configurable time progression, alarm scheduling, and a background daemon scheduler for waking idle agents.
 
 The goal is a **tab-based context workspace** that the agent manages like a human manages browser tabs — each app opens a tab, user/agent actions are tracked as structured past actions, and apps can create or update tabs as part of their execution lifecycle.
 
@@ -32,6 +32,9 @@ core/
   time/
     __init__.py
     time_service.py             TimeService, TimeConfig
+    time_handler.py             TimeHandler (system persistent tab — [Time])
+    alarm_service.py            AlarmService — agent_alarms CRUD + trigger
+    scheduler.py                AlarmScheduler — background daemon thread
 ```
 
 ---
@@ -72,14 +75,16 @@ Every app that wants to appear as a tab registers an `AppHandler`. The handler c
 
 ### Context Assembly Flow (`get_agent_context`)
 
-Accepts flags: `show_context_window`, `show_notes`, `show_diary`.
+Accepts flags: `show_context_window`, `show_notes`, `show_diary`, `show_time`.
 
 1. Ensure persistent system tabs exist — deletes tabs for disabled features, creates ones for enabled.
 2. Refresh all tab interfaces — each handler re-reads from its DB table.
-3. Iterate tabs in order, numbering them `[tab 1]`, `[tab 2]`, etc.
-4. For each tab, if `is_persistent=True`, auto-append `"  (persistent tab)"` — no hardcoded text in handlers.
-5. Count tokens for the context window tab and update its params.
-6. Return concatenated string.
+3. Sort tabs: **all persistent tabs first** (by `opened_at`), then non-persistent tabs (also by `opened_at`).
+4. Iterate tabs in order, numbering them `[tab 1]`, `[tab 2]`, etc.
+5. For each tab, if `is_persistent=True`, auto-append `"  (persistent tab)"` — no hardcoded text in handlers.
+6. Context window tab is always rendered last (after all other tabs).
+7. Count tokens for the context window tab and update its params.
+8. Return concatenated string.
 
 ### Persistence Toggle
 
@@ -194,8 +199,9 @@ Five system persistent tabs provide the agent's workspace context. Each can be t
 | `__context_window__` | `ContextWindowHandler` | `show_context_window` | Shows token usage (`Tokens: N / M, Usage: X%`) |
 | `__notes__` | `NotesHandler` | `show_notes` | Temporal memory — overwritable note with interaction-based expiry |
 | `__diary__` | `DiaryHandler` | `show_diary` | Long-term memory — today's append-only diary entry, dated by simulated clock |
+| `__time__` | `TimeHandler` | `show_time` | Displays agent simulated time, UTC time, ratio, pending alarms, and command docs |
 
-Opened automatically by `ensure_persistent_tabs()`, configured via `AppTabManager._SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__", "__notes__", "__diary__"]`.
+Opened automatically by `ensure_persistent_tabs()`, configured via `AppTabManager._SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__", "__notes__", "__diary__", "__time__"]`.
 
 ---
 
@@ -286,6 +292,131 @@ Controlled by the boolean `show_diary` field on the `agents` record (default `tr
 
 ---
 
+## Time — Simulated Clock & Alarm System (`time/`)
+
+The time system provides three components: a configurable simulated clock, a persistent `[Time]` tab, and a full alarm/wait system with background daemon scheduling.
+
+### TimeService — Simulated Clock (`time/time_service.py`)
+
+Maps real-world UTC time to agent-simulated time via epoch mapping and ratio:
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| `real_epoch` | `1970-01-01T00:00:00+00:00` | Real-world reference datetime |
+| `agent_epoch` | `1970-01-01T00:00:00+00:00` | Agent-world reference datetime |
+| `ratio` | `1.0` | Multiplier (1 real second = N agent seconds) |
+
+**Example**: `real_epoch=2000-01-01`, `agent_epoch=2025-01-01`, `ratio=60.0` → each real second advances the agent clock by 1 minute. A query at real `2026-06-09` would return agent time ~2026-06-09 + 60× elapsed from 2000.
+
+### TimeHandler — The `[Time]` Tab (`time/time_handler.py`)
+
+A system persistent tab (`__time__`) that shows:
+- Agent simulated time
+- Human (UTC) time
+- Ratio and epoch configuration
+- Pending alarms list
+- Command documentation for alarms and wait
+
+**Tab rendering:**
+```
+[Time]
+  Status: Open
+
+  Agent Simulated Time:  2026-06-09 05:15:27 UTC
+  Human (UTC) Time:      2026-06-09 05:15:27 UTC
+  Ratio:                 1.0x
+  Agent Epoch:           1970-01-01T00:00:00+00:00
+  Real Epoch:            1970-01-01T00:00:00+00:00
+
+  Commands:
+    Set alarm:   {"command": "set_alarm", "time": "<ISO datetime>", "message": "..."}
+    With type:   {"command": "set_alarm", "time": "...", "time_type": "agent|real", "message": "..."}
+    Acknowledge: {"command": "acknowledge_alarm", "alarm_id": "..."}
+    Wait:        {"command": "wait", "duration": <seconds>, "time_type": "agent|real"}
+    Wait until:  {"command": "wait_until", "time": "<ISO datetime>", "time_type": "agent|real"}
+  (persistent tab)
+```
+
+Toggled via the boolean `show_time` field on the `agents` record (default `true`).
+
+### AlarmService — Alarm CRUD (`time/alarm_service.py`)
+
+| Method | Description |
+|--------|-------------|
+| `set_alarm(agent_id, alarm_time, time_type, message)` | Create alarm; if `time_type="real"`, converts to agent time via ratio |
+| `check_alarms(agent_id)` | Returns all due+non-triggered alarms, marks them triggered |
+| `get_triggered_alarms(agent_id)` | Returns all triggered+unacknowledged alarms |
+| `get_pending_alarms(agent_id)` | Returns future non-triggered alarms (for Time tab display) |
+| `acknowledge_alarm(alarm_id)` | Deletes the alarm |
+| `cancel_alarm(alarm_id)` | Deletes only if not yet triggered |
+| `list_alarms(agent_id)` | Returns all alarms regardless of state |
+
+When `time_type="real"`, the alarm time is converted to agent time by:
+```
+elapsed_real = alarm_time - real_now
+agent_offset = elapsed_real * ratio
+converted = agent_now + agent_offset
+```
+
+### AlarmScheduler — Background Daemon (`time/scheduler.py`)
+
+A daemon thread that runs at a configurable interval (default 1s):
+
+1. Queries `agent_alarms` for non-triggered alarms where `alarm_time <= now`
+2. Atomically marks each as `triggered=1` (with `rowcount` guard for race safety)
+3. If `agent.status == "idle"`, sets it to `"active"` (wakes the agent)
+4. Logs all events
+
+The scheduler is started in:
+- **API**: FastAPI lifespan (`startup` event)
+- **CLI**: `_init_services()` on interactive launch
+- **Simulator**: `_init_services()` on startup
+
+### Alarm Notification in Context
+
+When `AgentRunner.run()` is called:
+1. It calls both `check_alarms(agent_id)` (catches edge-case alarms the scheduler hasn't seen yet) and `get_triggered_alarms(agent_id)` (picks up scheduler-triggered alarms)
+2. Merges and deduplicates by alarm ID
+3. If any triggered alarms exist, injects an `[Alarm Ringing!]` block at the **top** of the context:
+
+```
+[Alarm Ringing!]
+  time to check! (id=m61amau0)
+  Acknowledge: {"command": "acknowledge_alarm", "alarm_id": "..."}
+```
+
+4. The agent can acknowledge via `{"command": "acknowledge_alarm", "alarm_id": "..."}`, which deletes the alarm from the DB.
+
+### Agent Commands (Parsed in `AgentRunner._handle_alarm_wait_commands`)
+
+| Command | Effect |
+|---------|--------|
+| `{"command": "set_alarm", "time": "...", "message": "..."}` | Sets an agent-time alarm |
+| `{"command": "set_alarm", "time": "...", "time_type": "real", "message": "..."}` | Sets a real-time alarm (converted via ratio) |
+| `{"command": "acknowledge_alarm", "alarm_id": "..."}` | Acknowledges a triggered alarm (deletes it) |
+| `{"command": "wait", "duration": <seconds>}` | Returns `{"response": ..., "wait": N}` — caller sleeps N seconds |
+| `{"command": "wait_until", "time": "...", "time_type": "agent\|real"}` | Returns `{"response": ..., "wait": N}` — caller calculates sleep |
+
+The `wait` commands return the duration in the result dict. The caller (simulator or future production loop) is responsible for sleeping. The simulator implements this with `time.sleep()`.
+
+### Wake-on-Alarm Flow
+
+```
+Scheduler ticks → finds due alarm → marks triggered → agent status=idle?
+                                                          │
+                                                     ┌─────┴──────┐
+                                                     yes          no
+                                                       │            │
+                                                  set active     (agent is
+                                                       │        already running)
+                                                  next loop     next run()
+                                                  picks up         │
+                                                  agent now    triggered alarms
+                                                  active       injected in ctx
+```
+
+---
+
 ## Agent Runner (`agent/runner.py`)
 
 The production `AgentRunner`:
@@ -336,9 +467,27 @@ It does NOT parse agent responses for commands (that's the simulator layer). For
        ├── ListAppsHandler (app/list_apps.py)
        │       └── persistent tab listing available apps
        │
-       ├── TimeService (time/time_service.py)
-       │       └── now()                        →  provides simulated clock for diary dating
-       │
+        ├── TimeService (time/time_service.py)
+        │       └── now()                        →  provides simulated clock for diary dating, alarm comparison, and time tab display
+        │
+        ├── TimeHandler (time/time_handler.py)
+        │       └── [Time] persistent tab showing agent time, UTC, ratio, alarm commands
+        │
+        ├── AlarmService (time/alarm_service.py)
+        │       │
+        │       ├── set_alarm()                  →  agent_alarms table (supports agent/real time types)
+        │       ├── check_alarms()               →  marks due alarms as triggered
+        │       ├── get_triggered_alarms()       →  returns triggered + unacknowledged alarms
+        │       ├── acknowledge_alarm()          →  deletes alarm from DB
+        │       ├── cancel_alarm()               →  deletes non-triggered alarm
+        │       └── get_pending_alarms()         →  returns non-triggered alarms for display in Time tab
+        │
+        ├── AlarmScheduler (time/scheduler.py)
+        │       │
+        │       ├── daemon thread polling every ~1s
+        │       ├── marks triggered alarms atomically
+        │       └── wakes idle agents (status idle → active)
+        │
        └── AppHandler.execute() contract
                │
                ├── past_action_summary  →  clean entry in Past Actions tab
@@ -393,6 +542,23 @@ It does NOT parse agent responses for commands (that's the simulator layer). For
 | `content` | TEXT NOT NULL | Accumulated entry for that day |
 | `created_at` | TEXT | Timestamp of first write |
 | `updated_at` | TEXT | Timestamp of last append |
+
+**`agent_alarms`** — Alarms:
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | 8-char unique alarm ID |
+| `agent_id` | TEXT NOT NULL | FK to agents |
+| `alarm_time` | TEXT NOT NULL | ISO datetime (converted to agent time if `time_type="real"`) |
+| `time_type` | TEXT | `"agent"` or `"real"` — how the time was specified |
+| `message` | TEXT | Optional alarm message |
+| `triggered` | INTEGER | 0 = pending, 1 = fired |
+| `created_at` | TEXT | UTC timestamp of creation |
+
+The agents table also has two additional columns for time/alarm support:
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| `show_time` | INTEGER | 1 | Whether to show the `[Time]` tab in context |
+| `status` | TEXT | `"active"` | `"active"` = running, `"idle"` = sleeping (woken by scheduler) |
 
 ---
 

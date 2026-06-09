@@ -223,7 +223,7 @@ class AppTabManager:
             return None
         return self._row_to_record(row)
 
-    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__", "__notes__", "__diary__"]
+    _SYSTEM_PERSISTENT_APPS = ["__list_apps__", "__past_actions__", "__context_window__", "__notes__", "__diary__", "__time__"]
 
     def ensure_persistent_tabs(
         self,
@@ -233,6 +233,7 @@ class AppTabManager:
         agent_can_change_max_past_actions: bool = False,
         show_notes: bool = True,
         show_diary: bool = True,
+        show_time: bool = True,
     ) -> None:
         for app_id in self._SYSTEM_PERSISTENT_APPS:
             if app_id == "__context_window__" and not show_context_window:
@@ -248,6 +249,12 @@ class AppTabManager:
                 )
                 continue
             if app_id == "__diary__" and not show_diary:
+                self._svc.execute(
+                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
+                    (agent_id, app_id),
+                )
+                continue
+            if app_id == "__time__" and not show_time:
                 self._svc.execute(
                     "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
                     (agent_id, app_id),
@@ -298,6 +305,13 @@ class AppTabManager:
                             "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
                             (json.dumps(stored), now, existing["id"]),
                         )
+                if app_id == "__time__":
+                    if stored.get("agent_id") != agent_id:
+                        stored["agent_id"] = agent_id
+                        self._svc.execute(
+                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
+                            (json.dumps(stored), now, existing["id"]),
+                        )
                 continue
             if app_id == "__list_apps__":
                 self.open_app(agent_id, app_id, is_persistent=True, params={"agent_id": agent_id})
@@ -317,6 +331,11 @@ class AppTabManager:
                     params={"agent_id": agent_id},
                 )
             elif app_id == "__diary__":
+                self.open_app(
+                    agent_id, app_id, is_persistent=True,
+                    params={"agent_id": agent_id},
+                )
+            elif app_id == "__time__":
                 self.open_app(
                     agent_id, app_id, is_persistent=True,
                     params={"agent_id": agent_id},
@@ -384,9 +403,10 @@ class AppTabManager:
         agent_can_change_max_past_actions: bool = False,
         show_notes: bool = True,
         show_diary: bool = True,
+        show_time: bool = True,
         notes_manager=None,
     ) -> str:
-        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window, agent_can_change_max_past_actions, show_notes, show_diary)
+        self.ensure_persistent_tabs(agent_id, max_past_actions, show_context_window, agent_can_change_max_past_actions, show_notes, show_diary, show_time)
         if notes_manager is not None:
             self.sync_notes_tabs(agent_id, notes_manager)
         self.refresh_interfaces(agent_id)
@@ -398,6 +418,10 @@ class AppTabManager:
 
         if not records:
             return ""
+
+        persistent = [r for r in records if r.is_persistent]
+        non_persistent = [r for r in records if not r.is_persistent]
+        records = persistent + non_persistent
 
         cw_record = None
         other_records: list[AgentOpenAppRecord] = []

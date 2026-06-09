@@ -60,7 +60,7 @@ def _init_services(use_encryption: bool = False) -> dict:
     from api_service.database import ApiConfigManager
     from agents_service.database import AgentManager
     from apps_service.database import AppRegistry, AgentAppManager
-    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
+    from core import AppTabManager, ListAppsHandler, PastActionsService, PastActionsHandler, TimeService, TimeHandler, AlarmService, AlarmScheduler, NotesManager, NotesCommandHandler, NoteTabHandler, DiaryService, DiaryHandler
     from core.context_window import ContextWindowHandler
     from apps.list_directory.handler import ListDirectoryHandler
 
@@ -105,7 +105,11 @@ def _init_services(use_encryption: bool = False) -> dict:
 
     diary_svc = DiaryService(svc=svc)
     time_svc = TimeService(svc=svc)
+    alarm_svc = AlarmService(svc=svc, time_svc=time_svc)
+    alarm_scheduler = AlarmScheduler(svc=svc, time_svc=time_svc, agent_mgr=agent_mgr)
+    alarm_scheduler.start()
     app_tab_mgr.register_handler("__diary__", DiaryHandler(diary_svc, time_svc))
+    app_tab_mgr.register_handler("__time__", TimeHandler(time_svc, alarm_svc))
 
     return {
         "svc": svc,
@@ -115,6 +119,8 @@ def _init_services(use_encryption: bool = False) -> dict:
         "agent_app_mgr": agent_app_mgr,
         "app_tab_mgr": app_tab_mgr,
         "time_svc": time_svc,
+        "alarm_svc": alarm_svc,
+        "alarm_scheduler": alarm_scheduler,
         "past_actions_svc": past_actions_svc,
         "notes_manager": notes_manager,
         "diary_svc": diary_svc,
@@ -134,6 +140,7 @@ def _context(
     agent_can_change_max_past_actions=False,
     show_notes=True,
     show_diary=True,
+    show_time=True,
     notes_manager=None,
 ) -> str:
     return app_tab_mgr.get_agent_context(
@@ -144,6 +151,7 @@ def _context(
         agent_can_change_max_past_actions=agent_can_change_max_past_actions,
         show_notes=show_notes,
         show_diary=show_diary,
+        show_time=show_time,
         notes_manager=notes_manager,
     )
 
@@ -222,6 +230,7 @@ def _handle_input(
     scw = getattr(agent, "show_context_window", False) if agent else False
     cw = getattr(agent, "context_window", 4096) if agent else 4096
     acc = getattr(agent, "agent_can_change_max_past_actions", False) if agent else False
+    st = getattr(agent, "show_time", True) if agent else True
 
     app_tab_mgr.refresh_interfaces(agent_id)
     ctx = _context(
@@ -230,6 +239,7 @@ def _handle_input(
         show_context_window=scw,
         context_window=cw,
         agent_can_change_max_past_actions=acc,
+        show_time=st,
         notes_manager=services.get("notes_manager"),
     )
 
@@ -255,6 +265,10 @@ _SHORTCUTS = {
     "delete_note": ("delete_note", None),
     "write_diary": ("write_diary", None),
     "list_diary": ("list_diary", None),
+    "set_alarm": ("set_alarm", None),
+    "acknowledge_alarm": ("acknowledge_alarm", None),
+    "wait": ("wait", None),
+    "wait_until": ("wait_until", None),
     "help": ("help", None),
     "quit": ("quit", None),
     "exit": ("quit", None),
@@ -294,6 +308,7 @@ def _dispatch(
         return results
 
     time_svc = services.get("time_svc")
+    alarm_svc = services.get("alarm_svc")
     past_actions_svc = services.get("past_actions_svc")
     notes_manager = services.get("notes_manager")
     diary_svc = services.get("diary_svc")
@@ -303,6 +318,7 @@ def _dispatch(
     acc = getattr(agent, "agent_can_change_max_past_actions", False) if agent else False
     sn = getattr(agent, "show_notes", True) if agent else True
     sd = getattr(agent, "show_diary", True) if agent else True
+    st = getattr(agent, "show_time", True) if agent else True
 
     def _ctx() -> str:
         return _context(
@@ -313,6 +329,7 @@ def _dispatch(
             agent_can_change_max_past_actions=acc,
             show_notes=sn,
             show_diary=sd,
+            show_time=st,
             notes_manager=notes_manager,
         )
 
@@ -616,6 +633,83 @@ def _dispatch(
                         agent_id, "assistant", json.dumps(result), time_svc=time_svc,
                     )
                 results.append({"type": "context", "content": _ctx()})
+        elif command in ("set_alarm",):
+            if not alarm_svc:
+                err = {"error": "Alarm service not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                alarm_time = item.get("time", "")
+                message = item.get("message", "")
+                time_type = item.get("time_type", "agent")
+                if not alarm_time:
+                    err = {"error": "time required for set_alarm"}
+                    results.append({"type": "error", "data": err})
+                else:
+                    alarm_id = alarm_svc.set_alarm(agent_id, alarm_time, time_type=time_type, message=message)
+                    if alarm_id:
+                        result = {"success": True, "alarm_id": alarm_id, "time": alarm_time, "message": message}
+                        results.append({"type": "result", "command": "set_alarm", "data": result})
+                    else:
+                        err = {"error": "Alarm time is in the past"}
+                        results.append({"type": "error", "data": err})
+                    if past_actions_svc:
+                        past_actions_svc.record_action(agent_id, "assistant", json.dumps(result if alarm_id else err), time_svc=time_svc)
+                    results.append({"type": "context", "content": _ctx()})
+        elif command in ("acknowledge_alarm",):
+            if not alarm_svc:
+                err = {"error": "Alarm service not available"}
+                results.append({"type": "error", "data": err})
+            else:
+                alarm_id = item.get("alarm_id", "")
+                if not alarm_id:
+                    err = {"error": "alarm_id required"}
+                    results.append({"type": "error", "data": err})
+                elif alarm_svc.acknowledge_alarm(alarm_id):
+                    result = {"success": True, "alarm_id": alarm_id, "status": "acknowledged"}
+                    results.append({"type": "result", "command": "acknowledge_alarm", "data": result})
+                else:
+                    err = {"error": f"Alarm '{alarm_id}' not found"}
+                    results.append({"type": "error", "data": err})
+                if past_actions_svc:
+                    past_actions_svc.record_action(agent_id, "assistant", json.dumps(result if result.get("success") else err), time_svc=time_svc)
+                results.append({"type": "context", "content": _ctx()})
+        elif command in ("wait",):
+            duration = item.get("duration", 0)
+            try:
+                duration = float(duration)
+            except (ValueError, TypeError):
+                duration = 0
+            if duration <= 0:
+                err = {"error": "duration must be a positive number"}
+                results.append({"type": "error", "data": err})
+            else:
+                result = {"status": "waiting", "duration_seconds": duration}
+                results.append({"type": "result", "command": "wait", "data": result})
+                if past_actions_svc:
+                    past_actions_svc.record_action(agent_id, "assistant", json.dumps(result), time_svc=time_svc)
+        elif command in ("wait_until",):
+            target = item.get("time", "")
+            if not target:
+                err = {"error": "time required for wait_until"}
+                results.append({"type": "error", "data": err})
+            else:
+                try:
+                    target_dt = __import__('datetime').datetime.fromisoformat(target)
+                    now = __import__('datetime').datetime.now(__import__('datetime').timezone.utc)
+                    if target_dt.tzinfo is None:
+                        target_dt = target_dt.replace(tzinfo=__import__('datetime').timezone.utc)
+                    diff = (target_dt - now).total_seconds()
+                    if diff > 0:
+                        result = {"status": "waiting", "duration_seconds": diff, "until": target}
+                        results.append({"type": "result", "command": "wait_until", "data": result})
+                    else:
+                        err = {"error": "Target time is in the past"}
+                        results.append({"type": "error", "data": err})
+                except Exception:
+                    err = {"error": f"Invalid time format: {target}"}
+                    results.append({"type": "error", "data": err})
+                if past_actions_svc:
+                    past_actions_svc.record_action(agent_id, "assistant", json.dumps(result if diff > 0 else err), time_svc=time_svc)
         elif command in ("help",):
             help_data = {
                 "open": {"usage": '{"command": "open", "app_id": "...", "tab_label": "...", "params": {...}}', "description": "Open an app tab"},
@@ -631,6 +725,10 @@ def _dispatch(
                 "delete_note": {"usage": '{"command": "delete_note", "note_id": "..."}', "description": "Delete a note and close its tab"},
                 "write_diary": {"usage": '{"command": "write_diary", "content": "..."}', "description": "Append to today's diary entry"},
                 "list_diary": {"usage": '{"command": "list_diary", "date": "YYYY-MM-DD"}', "description": "List diary entries (omit date for all)"},
+                "set_alarm": {"usage": '{"command": "set_alarm", "time": "<ISO datetime>", "message": "...", "time_type": "agent|real"}', "description": "Set an alarm"},
+                "acknowledge_alarm": {"usage": '{"command": "acknowledge_alarm", "alarm_id": "..."}', "description": "Acknowledge a ringing alarm"},
+                "wait": {"usage": '{"command": "wait", "duration": <seconds>}', "description": "Wait before next interaction"},
+                "wait_until": {"usage": '{"command": "wait_until", "time": "<ISO datetime>"}', "description": "Wait until a specific time"},
                 "help": {"usage": '{"command": "help"}', "description": "Show this help"},
                 "quit": {"usage": '{"command": "quit"}', "description": "Exit simulator"},
                 "input": {"usage": '{"input": "..."} or plain text', "description": "Simulate agent receiving input"},
@@ -709,6 +807,7 @@ def simulation_main() -> None:
     acc = agent.agent_can_change_max_past_actions if hasattr(agent, "agent_can_change_max_past_actions") else False
     sn = agent.show_notes if hasattr(agent, "show_notes") else True
     sd = agent.show_diary if hasattr(agent, "show_diary") else True
+    st = agent.show_time if hasattr(agent, "show_time") else True
     ctx = _context(
         agent_id, app_tab_mgr,
         max_past_actions=max_pa,
@@ -717,6 +816,7 @@ def simulation_main() -> None:
         agent_can_change_max_past_actions=acc,
         show_notes=sn,
         show_diary=sd,
+        show_time=st,
         notes_manager=services.get("notes_manager"),
     )
     agent_info = _oj({
@@ -747,6 +847,14 @@ def simulation_main() -> None:
         for r in results:
             if r.get("type") == "quit":
                 return
+            if r.get("command") in ("wait", "wait_until") and r.get("data", {}).get("status") == "waiting":
+                duration = r["data"].get("duration_seconds", 0)
+                if duration > 0:
+                    import time as _time
+                    from cli_service.display import print_info
+                    print_info(f"Waiting {duration:.0f} seconds...")
+                    _time.sleep(duration)
+                continue
             rtype = r.get("type", "")
             if rtype == "context":
                 panel = Panel(

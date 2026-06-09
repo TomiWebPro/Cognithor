@@ -83,6 +83,7 @@ Main Menu
 │      ├── Toggle agent can change past actions limit
 │      ├── Toggle notes tab — show/hide Notes temporal memory tab
 │      ├── Toggle diary feature — show/hide Diary long-term memory tab
+│      ├── Toggle time tab — show/hide Time tab with clock + alarm docs
 │      ├── View diary entries — browse past diary entries
 │      ├── Link primary model
 │      ├── Link backup model
@@ -133,18 +134,19 @@ removing models from a specific provider.
 parameters. Provides sub-actions for agent management:
 
 ```
- 1. Add agent
- 2. Edit context window
- 3. Edit past actions limit
- 4. Toggle context window tab
- 5. Toggle agent can change past actions limit
- 6. Toggle notes tab
- 7. Toggle diary feature
- 8. View diary entries
- 9. Link primary model
-10. Link backup model
-11. Delete agent
-12. Back to main menu
+  1. Add agent
+  2. Edit context window
+  3. Edit past actions limit
+  4. Toggle context window tab
+  5. Toggle agent can change past actions limit
+  6. Toggle notes tab
+  7. Toggle diary feature
+  8. Toggle time tab
+  9. View diary entries
+ 10. Link primary model
+ 11. Link backup model
+ 12. Delete agent
+ 13. Back to main menu
 ```
 
 The agents table shows the following columns:
@@ -159,6 +161,8 @@ The agents table shows the following columns:
 | `CW Tab` | Context window tab on/off |
 | `Notes` | Notes tab on/off |
 | `Diary` | Diary tab on/off |
+| `Time` | Time tab on/off |
+| `Status` | Agent status (active/idle) |
 | `Model Ref` | Primary model reference |
 | `Backup Ref` | Fallback model reference |
 

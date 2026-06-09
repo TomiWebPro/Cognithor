@@ -56,6 +56,7 @@ async def create_agent(
     if max_past_actions < 3:
         raise HTTPException(status_code=422, detail="'max_past_actions' must be at least 3")
     agent_can_change = payload.get("agent_can_change_max_past_actions", False)
+    show_time = payload.get("show_time", True)
     record = agent_mgr.create_agent(
         name=name,
         context_window=context_window,
@@ -63,6 +64,7 @@ async def create_agent(
         backup_model_ref=payload.get("backup_model_ref"),
         max_past_actions=max_past_actions,
         agent_can_change_max_past_actions=agent_can_change,
+        show_time=show_time,
     )
     return vars(record)
 
@@ -92,6 +94,8 @@ async def update_agent(
         if max_past_actions < 3:
             raise HTTPException(status_code=422, detail="'max_past_actions' must be at least 3")
     agent_can_change = payload.get("agent_can_change_max_past_actions")
+    show_time = payload.get("show_time")
+    status = payload.get("status")
     record = agent_mgr.update_agent(
         agent_id=agent_id,
         name=payload.get("name"),
@@ -100,6 +104,8 @@ async def update_agent(
         backup_model_ref=payload.get("backup_model_ref"),
         max_past_actions=max_past_actions,
         agent_can_change_max_past_actions=agent_can_change,
+        show_time=show_time,
+        status=status,
     )
     return vars(record)
 
