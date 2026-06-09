@@ -25,28 +25,53 @@ class TimeHandler(AppHandler):
         real_time = datetime.datetime.now(datetime.timezone.utc)
         cfg = self._time_svc.get_config()
 
+        time_str = agent_time.strftime('%Y-%m-%d %H:%M:%S UTC')
         label = f" ({tab_label})" if tab_label else ""
-        lines = [
-            f"[Time]{label}",
-            "  Status: Open",
-            "",
-            "  Agent Simulated Time operates on its own clock that may run faster",
-            "  than real time. Use agent time for planning and thinking. Use real",
-            "  (UTC) time for time-sensitive external tasks.",
-            "",
-            f"  Agent Simulated Time:  {agent_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-            f"  Human (UTC) Time:      {real_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-            f"  Ratio:                 {cfg.ratio}x",
-            f"  Agent Epoch:           {cfg.agent_epoch}",
-            f"  Real Epoch:            {cfg.real_epoch}",
-            "",
-            "  Commands:",
-            '    Set alarm:   {"command": "set_alarm", "time": "<ISO datetime>", "message": "..."}',
-            '    With type:   {"command": "set_alarm", "time": "...", "time_type": "agent|real", "message": "..."}',
-            '    Acknowledge: {"command": "acknowledge_alarm", "alarm_id": "..."}',
-            '    Wait:        {"command": "wait", "duration": <seconds>, "time_type": "agent|real"}',
-            '    Wait until:  {"command": "wait_until", "time": "<ISO datetime>", "time_type": "agent|real"}',
-        ]
+        ratio = cfg.ratio
+
+        if ratio == 1.0:
+            lines = [
+                f"[Time]{label}",
+                "  Status: Open",
+                "",
+                f"  The current time is {time_str}",
+                "  You will be recalled once all submitted commands are executed and this tab is updated.",
+                "  Use wait/wait_until to pause for a duration or until a specific moment.",
+                "  If an alarm rings while you are idling, you will be woken up automatically.",
+                "",
+                "  Commands:",
+                '    Set alarm:   {"command": "set_alarm", "time": "<ISO datetime>", "message": "..."}',
+                '    Acknowledge: {"command": "acknowledge_alarm", "alarm_id": "..."}',
+                '    Wait:        {"command": "wait", "duration": <seconds>}',
+                '    Wait until:  {"command": "wait_until", "time": "<ISO datetime>"}',
+            ]
+        else:
+            if ratio > 1.0:
+                speed = f"{ratio}x faster"
+            else:
+                speed = f"{1/ratio:.1f}x slower"
+
+            lines = [
+                f"[Time]{label}",
+                "  Status: Open",
+                "",
+                f"  Agent simulated time is {speed} than human time",
+                "  Agent Simulated Time operates on its own clock — use it for planning and thinking.",
+                "  Use real (UTC) time for time-sensitive external tasks.",
+                "  You will be recalled once all submitted commands are executed and this tab is updated.",
+                "  Use wait/wait_until to pause for a duration or until a specific moment.",
+                "  If an alarm rings while you are idling, you will be woken up automatically.",
+                "",
+                f"  Agent Simulated Time:  {time_str}",
+                f"  Human (UTC) Time:      {real_time.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                "",
+                "  Commands:",
+                '    Set alarm:   {"command": "set_alarm", "time": "<ISO datetime>", "message": "..."}',
+                '    With type:   {"command": "set_alarm", "time": "...", "time_type": "agent|real", "message": "..."}',
+                '    Acknowledge: {"command": "acknowledge_alarm", "alarm_id": "..."}',
+                '    Wait:        {"command": "wait", "duration": <seconds>, "time_type": "agent|real"}',
+                '    Wait until:  {"command": "wait_until", "time": "<ISO datetime>", "time_type": "agent|real"}',
+            ]
 
         if self._alarm_svc and agent_id:
             pending = self._alarm_svc.get_pending_alarms(agent_id)

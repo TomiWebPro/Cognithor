@@ -310,23 +310,36 @@ Maps real-world UTC time to agent-simulated time via epoch mapping and ratio:
 
 ### TimeHandler — The `[Time]` Tab (`time/time_handler.py`)
 
-A system persistent tab (`__time__`) that shows:
-- Agent simulated time
-- Human (UTC) time
-- Ratio and epoch configuration
-- Pending alarms list
-- Command documentation for alarms and wait
+A system persistent tab (`__time__`) that shows the current simulated time
+and alarm/wait commands. When `ratio != 1.0` it also displays the speed
+difference and both agent/UTC times.
 
-**Tab rendering:**
+**Tab rendering (ratio == 1.0):**
 ```
 [Time]
   Status: Open
 
+  The current time is 2026-06-09 05:15:27 UTC
+
+  Commands:
+    Set alarm:   {"command": "set_alarm", "time": "<ISO datetime>", "message": "..."}
+    Acknowledge: {"command": "acknowledge_alarm", "alarm_id": "..."}
+    Wait:        {"command": "wait", "duration": <seconds>}
+    Wait until:  {"command": "wait_until", "time": "<ISO datetime>"}
+  (persistent tab)
+```
+
+**Tab rendering (ratio != 1.0):**
+```
+[Time]
+  Status: Open
+
+  Agent simulated time is 3.0x faster than human time
+  Agent Simulated Time operates on its own clock — use it for planning and thinking.
+  Use real (UTC) time for time-sensitive external tasks.
+
   Agent Simulated Time:  2026-06-09 05:15:27 UTC
   Human (UTC) Time:      2026-06-09 05:15:27 UTC
-  Ratio:                 1.0x
-  Agent Epoch:           1970-01-01T00:00:00+00:00
-  Real Epoch:            1970-01-01T00:00:00+00:00
 
   Commands:
     Set alarm:   {"command": "set_alarm", "time": "<ISO datetime>", "message": "..."}

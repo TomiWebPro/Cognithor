@@ -666,7 +666,7 @@ def _dispatch(
                 err = {"error": "duration must be a positive number"}
                 results.append({"type": "error", "data": err})
             else:
-                result = {"status": "waiting", "duration_seconds": duration}
+                result = {"status": "finished_waiting", "duration_seconds": duration}
                 results.append({"type": "result", "command": "wait", "data": result})
                 if past_actions_svc:
                     past_actions_svc.record_action(agent_id, "assistant", json.dumps(result), time_svc=time_svc)
@@ -683,7 +683,7 @@ def _dispatch(
                         target_dt = target_dt.replace(tzinfo=__import__('datetime').timezone.utc)
                     diff = (target_dt - now).total_seconds()
                     if diff > 0:
-                        result = {"status": "waiting", "duration_seconds": diff, "until": target}
+                        result = {"status": "finished_waiting", "duration_seconds": diff, "until": target}
                         results.append({"type": "result", "command": "wait_until", "data": result})
                     else:
                         err = {"error": "Target time is in the past"}
@@ -830,13 +830,7 @@ def simulation_main() -> None:
         for r in results:
             if r.get("type") == "quit":
                 return
-            if r.get("command") in ("wait", "wait_until") and r.get("data", {}).get("status") == "waiting":
-                duration = r["data"].get("duration_seconds", 0)
-                if duration > 0:
-                    import time as _time
-                    from cli_service.display import print_info
-                    print_info(f"Waiting {duration:.0f} seconds...")
-                    _time.sleep(duration)
+            if r.get("command") in ("wait", "wait_until") and r.get("data", {}).get("status") == "finished_waiting":
                 continue
             rtype = r.get("type", "")
             if rtype == "context":
