@@ -22,6 +22,132 @@ async def list_agents(
     return [vars(a) for a in agents]
 
 
+@router.get("/agents/runtime")
+async def list_agents_runtime(
+    agent_mgr: AgentManager = Depends(_get_agent_mgr),
+    request: Request = None,
+    _: str = Depends(get_current_user),
+):
+    agents = agent_mgr.list_agents()
+    results = []
+    for a in agents:
+        results.append(_build_runtime(a, agent_mgr, request))
+    return results
+
+
+@router.get("/agents/{agent_id}/runtime")
+async def get_agent_runtime(
+    agent_id: str,
+    agent_mgr: AgentManager = Depends(_get_agent_mgr),
+    request: Request = None,
+    _: str = Depends(get_current_user),
+):
+    existing = agent_mgr.get_agent(agent_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _build_runtime(existing, agent_mgr, request)
+
+
+@router.get("/agents/{agent_id}/context")
+async def get_agent_context(
+    agent_id: str,
+    agent_mgr: AgentManager = Depends(_get_agent_mgr),
+    request: Request = None,
+    _: str = Depends(get_current_user),
+):
+    existing = agent_mgr.get_agent(agent_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    ctx_lines = []
+    app_tab_mgr = getattr(request.app.state, "app_tab_mgr", None) if request else None
+    notes_manager = getattr(request.app.state, "notes_manager", None) if request else None
+
+    if app_tab_mgr is not None:
+        ctx = app_tab_mgr.get_agent_context(
+            agent_id,
+            max_past_actions=existing.max_past_actions or 15,
+            show_context_window=existing.show_context_window,
+            context_window=existing.context_window or 4096,
+            agent_can_change_max_past_actions=existing.agent_can_change_max_past_actions,
+            show_notes=getattr(existing, "show_notes", True),
+            show_diary=getattr(existing, "show_diary", True),
+            show_time=getattr(existing, "show_time", True),
+            notes_manager=notes_manager,
+        )
+        if ctx:
+            ctx_lines.append(ctx)
+
+    return {"context": "\n".join(ctx_lines)}
+
+
+def _build_runtime(agent, agent_mgr: AgentManager, request: Request) -> dict:
+    result = {"agent": vars(agent)}
+
+    past_actions_svc = getattr(request.app.state, "past_actions_svc", None) if request else None
+    if past_actions_svc is not None:
+        records = past_actions_svc.get_recent_actions(agent.agent_id, max_count=5)
+        result["recent_actions"] = [
+            {"role": r.role, "summary": r.summary, "content": (r.content or "")[:200], "created_at": r.created_at}
+            for r in records
+        ]
+    else:
+        result["recent_actions"] = []
+
+    notes_mgr = getattr(request.app.state, "notes_manager", None) if request else None
+    if notes_mgr is not None:
+        notes = notes_mgr.list_notes(agent.agent_id)
+        result["notes"] = [
+            {"id": n["id"], "title": n["title"], "content": (n["content"] or "")[:200], "created_at": n["created_at"]}
+            for n in (notes or [])
+        ]
+        result["notes_count"] = len(result["notes"])
+    else:
+        result["notes"] = []
+        result["notes_count"] = 0
+
+    diary_svc = getattr(request.app.state, "diary_svc", None) if request else None
+    if diary_svc is not None:
+        entries = diary_svc.list_entries(agent.agent_id)
+        result["diary_count"] = len(entries) if entries else 0
+        result["latest_diary"] = entries[0].content[:200] if entries else None
+    else:
+        result["diary_count"] = 0
+        result["latest_diary"] = None
+
+    alarm_svc = getattr(request.app.state, "alarm_service", None) if request else None
+    if alarm_svc is not None:
+        alarms = alarm_svc.list_alarms(agent.agent_id)
+        result["alarms"] = alarms or []
+        result["alarms_count"] = len(result["alarms"])
+    else:
+        result["alarms"] = []
+        result["alarms_count"] = 0
+
+    app_tab_mgr = getattr(request.app.state, "app_tab_mgr", None) if request else None
+    if app_tab_mgr is not None:
+        tabs = app_tab_mgr.list_open_apps(agent.agent_id)
+        result["open_tabs"] = [
+            {"tab_id": t.id, "app_id": t.app_id, "label": t.tab_label, "persistent": t.is_persistent}
+            for t in (tabs or [])
+        ]
+    else:
+        result["open_tabs"] = []
+
+    agent_app_mgr = getattr(request.app.state, "agent_app_mgr", None) if request else None
+    if agent_app_mgr is not None:
+        apps = agent_app_mgr.list_agent_apps(agent.agent_id)
+        result["installed_apps_count"] = len(apps) if apps else 0
+        result["enabled_apps_count"] = sum(1 for a in (apps or []) if a.is_enabled)
+    else:
+        result["installed_apps_count"] = 0
+        result["enabled_apps_count"] = 0
+
+    result["context_window"] = agent.context_window
+
+    return result
+
+
 @router.get("/agents/{agent_id}")
 async def get_agent(
     agent_id: str,

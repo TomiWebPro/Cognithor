@@ -46,6 +46,8 @@ class AgentRunner:
         agent = self.agent_mgr.get_agent(agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
+        if getattr(agent, "status", "active") == "paused":
+            raise ValueError(f"Agent {agent_id} is paused — cannot execute")
 
         triggered_alarms = []
         if self.alarm_svc is not None:
