@@ -141,8 +141,9 @@ def _context(
     show_diary=True,
     show_time=True,
     notes_manager=None,
+    agent_mgr=None,
 ) -> str:
-    return app_tab_mgr.get_agent_context(
+    ctx = app_tab_mgr.get_agent_context(
         agent_id,
         max_past_actions=max_past_actions,
         show_context_window=show_context_window,
@@ -153,6 +154,9 @@ def _context(
         show_time=show_time,
         notes_manager=notes_manager,
     )
+    if agent_mgr:
+        agent_mgr.save_agent_context(agent_id, ctx)
+    return ctx
 
 
 def _handle_open(args: dict, services: dict, agent_id: str) -> Optional[dict]:
@@ -224,6 +228,7 @@ def _handle_input(
         agent_can_change_max_past_actions=acc,
         show_time=st,
         notes_manager=services.get("notes_manager"),
+        agent_mgr=services.get("agent_mgr"),
     )
 
     combined = ctx + "\n\n" + content if ctx else content
@@ -801,6 +806,7 @@ def simulation_main() -> None:
         show_diary=sd,
         show_time=st,
         notes_manager=services.get("notes_manager"),
+        agent_mgr=services.get("agent_mgr"),
     )
     agent_info = _oj({
         "type": "session",

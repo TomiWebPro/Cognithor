@@ -78,6 +78,18 @@ class AgentManager:
             )
         except Exception:
             logger.info("Column status already exists or could not be added", exc_info=True)
+        try:
+            self._svc.execute(
+                "ALTER TABLE agents ADD COLUMN last_context TEXT"
+            )
+        except Exception:
+            logger.info("Column last_context already exists or could not be added", exc_info=True)
+        try:
+            self._svc.execute(
+                "ALTER TABLE agents ADD COLUMN last_context_updated_at TEXT"
+            )
+        except Exception:
+            logger.info("Column last_context_updated_at already exists or could not be added", exc_info=True)
 
     def _ensure_unique_id(self) -> str:
         for _ in range(100):
@@ -181,6 +193,13 @@ class AgentManager:
         self._svc.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
         return True
 
+    def save_agent_context(self, agent_id: str, context_text: str) -> None:
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._svc.execute(
+            "UPDATE agents SET last_context = ?, last_context_updated_at = ? WHERE agent_id = ?",
+            (context_text, now, agent_id),
+        )
+
     def _row_to_record(self, row) -> AgentRecord:
         try:
             mpa = row["max_past_actions"] or 15
@@ -210,6 +229,14 @@ class AgentManager:
             status = row["status"] or "active"
         except (IndexError, KeyError, TypeError):
             status = "active"
+        try:
+            last_context = row["last_context"]
+        except (IndexError, KeyError, TypeError):
+            last_context = None
+        try:
+            last_context_updated_at = row["last_context_updated_at"]
+        except (IndexError, KeyError, TypeError):
+            last_context_updated_at = None
         return AgentRecord(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -224,6 +251,8 @@ class AgentManager:
             show_diary=sd,
             show_time=st,
             status=status,
+            last_context=last_context,
+            last_context_updated_at=last_context_updated_at,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

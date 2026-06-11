@@ -52,33 +52,16 @@ async def get_agent_runtime(
 async def get_agent_context(
     agent_id: str,
     agent_mgr: AgentManager = Depends(_get_agent_mgr),
-    request: Request = None,
     _: str = Depends(get_current_user),
 ):
     existing = agent_mgr.get_agent(agent_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    ctx_lines = []
-    app_tab_mgr = getattr(request.app.state, "app_tab_mgr", None) if request else None
-    notes_manager = getattr(request.app.state, "notes_manager", None) if request else None
-
-    if app_tab_mgr is not None:
-        ctx = app_tab_mgr.get_agent_context(
-            agent_id,
-            max_past_actions=existing.max_past_actions or 15,
-            show_context_window=existing.show_context_window,
-            context_window=existing.context_window or 4096,
-            agent_can_change_max_past_actions=existing.agent_can_change_max_past_actions,
-            show_notes=getattr(existing, "show_notes", True),
-            show_diary=getattr(existing, "show_diary", True),
-            show_time=getattr(existing, "show_time", True),
-            notes_manager=notes_manager,
-        )
-        if ctx:
-            ctx_lines.append(ctx)
-
-    return {"context": "\n".join(ctx_lines)}
+    return {
+        "context": existing.last_context or "",
+        "last_updated": existing.last_context_updated_at,
+    }
 
 
 def _build_runtime(agent, agent_mgr: AgentManager, request: Request) -> dict:

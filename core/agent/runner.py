@@ -81,6 +81,8 @@ class AgentRunner:
             show_time=getattr(agent, "show_time", True),
             notes_manager=self.notes_manager,
         )
+        if self.agent_mgr:
+            self.agent_mgr.save_agent_context(agent_id, ctx)
 
         if alarm_notification:
             ctx = alarm_notification + "\n\n" + ctx if ctx else alarm_notification
