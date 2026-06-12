@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Optional
 
 from agents_service import AgentManager, parse_model_ref
@@ -43,6 +44,7 @@ class AgentRunner:
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> dict:
+        t0 = time.perf_counter()
         agent = self.agent_mgr.get_agent(agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
@@ -115,7 +117,8 @@ class AgentRunner:
             except Exception:
                 logger.error("Failed to parse model_ref '%s', falling back to default provider", agent.model_ref, exc_info=True)
 
-        response, _ = self.endpoint_mgr.chat(
+        t1 = time.perf_counter()
+        response, usage = self.endpoint_mgr.chat(
             messages=messages,
             provider=provider,
             model=model,
@@ -123,15 +126,43 @@ class AgentRunner:
             max_tokens=max_tokens,
             context=agent_id,
         )
+        t2 = time.perf_counter()
 
         response = self._handle_config_command(response, agent)
         response = self._handle_notes_diary_commands(response, agent, agent_id)
         response, wait_seconds = self._handle_alarm_wait_commands(response, agent, agent_id)
+        t3 = time.perf_counter()
+
         response = self._handle_app_commands(response, agent_id)
+        t4 = time.perf_counter()
 
         if self.past_actions_svc is not None:
             self.past_actions_svc.record_action(agent_id, "assistant", response)
             self.past_actions_svc.trim_actions(agent_id, agent.max_past_actions or 15)
+
+        t5 = time.perf_counter()
+
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        try:
+            self.endpoint_mgr.tracker.record_run(
+                agent_id=agent_id,
+                agent_name=agent.name,
+                model=(usage.model if usage else (model or "")),
+                provider=provider,
+                input_tokens=usage.input_tokens if usage else 0,
+                output_tokens=usage.output_tokens if usage else 0,
+                cost=usage.cost if usage else 0.0,
+                total_duration_ms=(t5 - t0) * 1000,
+                llm_duration_ms=(t2 - t1) * 1000,
+                harness_duration_ms=(t4 - t3) * 1000,
+                wait_requested_ms=(wait_seconds or 0) * 1000,
+                status="completed",
+                started_at=now,
+                completed_at=now,
+            )
+        except Exception:
+            logger.exception("Failed to record agent run stats for %s", agent_id)
 
         result = {"response": response}
         if wait_seconds is not None:

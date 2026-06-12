@@ -156,7 +156,8 @@ class Tracker:
                 status          TEXT DEFAULT 'completed',
                 context         TEXT,
                 timestamp       TEXT DEFAULT (datetime('now')),
-                metadata        TEXT
+                metadata        TEXT,
+                agent_id        TEXT
             );
 
             CREATE TABLE IF NOT EXISTS health_checks (
@@ -166,6 +167,25 @@ class Tracker:
                 latency_ms  REAL,
                 error       TEXT,
                 checked_at  TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id            TEXT NOT NULL,
+                agent_name          TEXT,
+                model               TEXT,
+                provider            TEXT,
+                input_tokens        INTEGER DEFAULT 0,
+                output_tokens       INTEGER DEFAULT 0,
+                cost                REAL DEFAULT 0.0,
+                total_duration_ms   REAL,
+                llm_duration_ms     REAL,
+                harness_duration_ms REAL,
+                wait_requested_ms   REAL,
+                status              TEXT DEFAULT 'completed',
+                error               TEXT,
+                started_at          TEXT,
+                completed_at        TEXT
             );
         """)
 
@@ -202,6 +222,41 @@ class Tracker:
                 )
 
             self._svc.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (1)")
+
+        if version < 2:
+            try:
+                self._svc.execute("ALTER TABLE usage_log ADD COLUMN agent_id TEXT")
+                self.log.notify("Added agent_id column to usage_log", folder="endpoint/database", file=__file__)
+            except Exception:
+                self.log.normal_operation("agent_id column already exists on usage_log", folder="endpoint/database", file=__file__)
+
+            self._svc.execute("UPDATE usage_log SET agent_id = context WHERE agent_id IS NULL AND context IS NOT NULL AND context != ''")
+
+            self._svc.execute_script("""
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_id            TEXT NOT NULL,
+                    agent_name          TEXT,
+                    model               TEXT,
+                    provider            TEXT,
+                    input_tokens        INTEGER DEFAULT 0,
+                    output_tokens       INTEGER DEFAULT 0,
+                    cost                REAL DEFAULT 0.0,
+                    total_duration_ms   REAL,
+                    llm_duration_ms     REAL,
+                    harness_duration_ms REAL,
+                    wait_requested_ms   REAL,
+                    status              TEXT DEFAULT 'completed',
+                    error               TEXT,
+                    started_at          TEXT,
+                    completed_at        TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at);
+            """)
+            self.log.notify("Created agent_runs table", folder="endpoint/database", file=__file__)
+
+            self._svc.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (2)")
 
     def _insert_provider(self, rec: ProviderRecord) -> None:
         self._svc.execute(
@@ -365,6 +420,7 @@ class Tracker:
         status: str = "completed",
         context: Optional[str] = None,
         metadata: Optional[dict] = None,
+        agent_id: Optional[str] = None,
     ) -> int:
         if status == "failed":
             self.log.error(
@@ -373,10 +429,10 @@ class Tracker:
             )
         return self._svc.insert(
             """INSERT INTO usage_log
-               (provider, model, input_tokens, output_tokens, cost, duration_ms, status, context, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (provider, model, input_tokens, output_tokens, cost, duration_ms, status, context, metadata, agent_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (provider, model, input_tokens, output_tokens, cost, duration_ms, status, context,
-             json.dumps(metadata) if metadata else None),
+             json.dumps(metadata) if metadata else None, agent_id),
         )
 
     def record_health(
@@ -395,6 +451,252 @@ class Tracker:
                 f"Health check unavailable provider={provider} error={error}",
                 folder="endpoint/database", file=__file__,
             )
+
+    def record_run(
+        self,
+        agent_id: str,
+        agent_name: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost: float = 0.0,
+        total_duration_ms: Optional[float] = None,
+        llm_duration_ms: Optional[float] = None,
+        harness_duration_ms: Optional[float] = None,
+        wait_requested_ms: Optional[float] = None,
+        status: str = "completed",
+        error: Optional[str] = None,
+        started_at: Optional[str] = None,
+        completed_at: Optional[str] = None,
+    ) -> int:
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        return self._svc.insert(
+            """INSERT INTO agent_runs
+               (agent_id, agent_name, model, provider,
+                input_tokens, output_tokens, cost,
+                total_duration_ms, llm_duration_ms, harness_duration_ms,
+                wait_requested_ms, status, error, started_at, completed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (agent_id, agent_name, model, provider,
+             input_tokens, output_tokens, cost,
+             total_duration_ms, llm_duration_ms, harness_duration_ms,
+             wait_requested_ms, status, error,
+             started_at or now, completed_at or now),
+        )
+
+    def get_token_usage(
+        self,
+        period_hours: Optional[float] = None,
+        agent_id: Optional[str] = None,
+    ) -> dict:
+        if period_hours is not None:
+            where = "WHERE timestamp >= datetime('now', ?)"
+            params: list = [f'-{period_hours} hours']
+        else:
+            where = ""
+            params = []
+        if agent_id:
+            where += " AND agent_id = ?" if where else "WHERE agent_id = ?"
+            params.append(agent_id)
+        row = self._svc.query_one(
+            f"SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), "
+            f"COALESCE(SUM(cost), 0.0), COUNT(*) FROM usage_log {where}",
+            tuple(params),
+        )
+        return {
+            "input_tokens": int(row[0]) if row else 0,
+            "output_tokens": int(row[1]) if row else 0,
+            "cost": float(row[2]) if row else 0.0,
+            "runs": int(row[3]) if row else 0,
+        }
+
+    def get_token_usage_by_agent(
+        self,
+        period_hours: Optional[float] = None,
+    ) -> list[dict]:
+        if period_hours is not None:
+            where = "WHERE timestamp >= datetime('now', ?)"
+            params: list = [f'-{period_hours} hours']
+        else:
+            where = ""
+            params = []
+        rows = self._svc.query(
+            f"SELECT agent_id, COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), "
+            f"COALESCE(SUM(cost), 0.0), COUNT(*) FROM usage_log {where} "
+            f"GROUP BY agent_id ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC",
+            tuple(params),
+        )
+        return [
+            {
+                "agent_id": r[0] or "unknown",
+                "input_tokens": int(r[1]),
+                "output_tokens": int(r[2]),
+                "cost": float(r[3]),
+                "runs": int(r[4]),
+            }
+            for r in rows
+        ]
+
+    @staticmethod
+    def _period_to_hours(p: str) -> Optional[float]:
+        if p == "all":
+            return None
+        p = p.strip()
+        if p.endswith("d"):
+            try:
+                return float(p[:-1]) * 24
+            except (ValueError, AttributeError):
+                return None
+        elif p.endswith("h"):
+            try:
+                return float(p[:-1])
+            except (ValueError, AttributeError):
+                return None
+        return None
+
+    def get_token_usage_by_period(
+        self,
+        periods: list[str],
+        agent_id: Optional[str] = None,
+    ) -> dict:
+        result = {}
+        for p in periods:
+            h = self._period_to_hours(p)
+            result[p] = self.get_token_usage(period_hours=h, agent_id=agent_id)
+        return result
+
+    def get_token_usage_by_agent_periods(
+        self,
+        periods: list[str],
+    ) -> dict:
+        all_agents = self._svc.query(
+            "SELECT DISTINCT agent_id FROM usage_log WHERE agent_id IS NOT NULL AND agent_id != ''"
+        )
+        result = {}
+        for row in all_agents:
+            aid = row[0]
+            result[aid] = self.get_token_usage_by_period(periods, agent_id=aid)
+            name_row = self._svc.query_one(
+                "SELECT agent_name FROM agent_runs WHERE agent_id = ? AND agent_name IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (aid,),
+            )
+            result[aid]["_name"] = name_row[0] if name_row else aid
+        return result
+
+    def get_timing_stats(
+        self,
+        period_hours: Optional[float] = None,
+        agent_id: Optional[str] = None,
+    ) -> dict:
+        if period_hours is not None:
+            where = "WHERE started_at >= datetime('now', ?)"
+            params: list = [f'-{period_hours} hours']
+        else:
+            where = ""
+            params = []
+        if agent_id:
+            where += " AND agent_id = ?" if where else "WHERE agent_id = ?"
+            params.append(agent_id)
+        row = self._svc.query_one(
+            f"SELECT COALESCE(SUM(llm_duration_ms), 0), COALESCE(SUM(harness_duration_ms), 0), "
+            f"COALESCE(SUM(wait_requested_ms), 0), COALESCE(SUM(total_duration_ms), 0), COUNT(*) "
+            f"FROM agent_runs {where}",
+            tuple(params),
+        )
+        return {
+            "generating_ms": float(row[0]) if row else 0.0,
+            "harness_ms": float(row[1]) if row else 0.0,
+            "wait_requested_ms": float(row[2]) if row else 0.0,
+            "total_ms": float(row[3]) if row else 0.0,
+            "runs": int(row[4]) if row else 0,
+        }
+
+    def get_timing_by_period(
+        self,
+        periods: list[str],
+        agent_id: Optional[str] = None,
+    ) -> dict:
+        result = {}
+        for p in periods:
+            h = self._period_to_hours(p)
+            result[p] = self.get_timing_stats(period_hours=h, agent_id=agent_id)
+        return result
+
+    def get_timing_by_agent_periods(
+        self,
+        periods: list[str],
+    ) -> dict:
+        all_agents = self._svc.query(
+            "SELECT DISTINCT agent_id FROM agent_runs WHERE agent_id IS NOT NULL AND agent_id != ''"
+        )
+        result = {}
+        for row in all_agents:
+            aid = row[0]
+            result[aid] = self.get_timing_by_period(periods, agent_id=aid)
+            name_row = self._svc.query_one(
+                "SELECT agent_name FROM agent_runs WHERE agent_id = ? AND agent_name IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (aid,),
+            )
+            result[aid]["_name"] = name_row[0] if name_row else aid
+        return result
+
+    def get_idle_breakdown(
+        self,
+        period_hours: Optional[float] = None,
+        agent_id: Optional[str] = None,
+    ) -> dict:
+        if period_hours is not None:
+            where = "WHERE started_at >= datetime('now', ?)"
+            params: list = [f'-{period_hours} hours']
+        else:
+            where = ""
+            params = []
+        if agent_id:
+            where += " AND agent_id = ?" if where else "WHERE agent_id = ?"
+            params.append(agent_id)
+
+        rows = self._svc.query(
+            f"SELECT agent_id, started_at, completed_at, wait_requested_ms "
+            f"FROM agent_runs {where} ORDER BY agent_id, started_at",
+            tuple(params),
+        )
+
+        idle_ms = 0.0
+        waiting_ms = 0.0
+        prev_completed: Optional[str] = None
+        prev_agent: Optional[str] = None
+
+        for r in rows:
+            current_agent = r["agent_id"]
+            started = r["started_at"]
+            completed = r["completed_at"]
+            wait_req = float(r["wait_requested_ms"] or 0.0)
+
+            waiting_ms += wait_req
+
+            if prev_agent == current_agent and prev_completed is not None and started:
+                try:
+                    import datetime as _dt
+                    prev_dt = _dt.datetime.fromisoformat(prev_completed)
+                    curr_dt = _dt.datetime.fromisoformat(started)
+                    gap_ms = (curr_dt - prev_dt).total_seconds() * 1000
+                    if gap_ms > 0:
+                        idle_ms += gap_ms
+                except (ValueError, TypeError):
+                    pass
+
+            prev_completed = completed
+            prev_agent = current_agent
+
+        return {
+            "idle_ms": max(0.0, idle_ms - waiting_ms),
+            "waiting_ms": waiting_ms,
+            "total_gap_ms": idle_ms,
+        }
 
     def get_total_cost(self, provider: Optional[str] = None) -> float:
         if provider:

@@ -85,6 +85,7 @@ class EndpointManager:
             duration_ms=usage.duration_ms,
             status="completed",
             context=context,
+            agent_id=context,
         )
         self.log.normal_operation(
             f"Chat completed provider={provider} model={usage.model} tokens_in={usage.input_tokens} tokens_out={usage.output_tokens}",

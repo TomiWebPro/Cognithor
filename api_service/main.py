@@ -43,6 +43,7 @@ def create_app(use_encryption: bool = False):
         providers_router,
         security_router,
         settings_router,
+        stats_router,
         time_router,
         notes_router,
         diary_router,
@@ -125,6 +126,7 @@ def create_app(use_encryption: bool = False):
     app.include_router(providers_router.router)
     app.include_router(agents_router.router)
     app.include_router(apps_router.router)
+    app.include_router(stats_router.router)
     app.include_router(time_router.router)
     app.include_router(notes_router.router)
     app.include_router(diary_router.router)
