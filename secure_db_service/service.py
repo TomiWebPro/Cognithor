@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextvars
 import logging
 import os
 
@@ -8,6 +9,10 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+
+_request_cnx: contextvars.ContextVar[sqlite3.Connection | None] = (
+    contextvars.ContextVar("_secure_db_request_cnx", default=None)
+)
 
 from .key_manager import FALLBACK_KEY, get_or_create_key, resolve_key
 
@@ -192,6 +197,10 @@ class SecureDbService:
 
     @contextmanager
     def connection(self) -> sqlite3.Connection:
+        existing = _request_cnx.get()
+        if existing is not None:
+            yield existing
+            return
         conn = self.connect()
         try:
             yield conn
@@ -200,6 +209,20 @@ class SecureDbService:
             conn.rollback()
             raise
         finally:
+            conn.close()
+
+    @contextmanager
+    def request_connection(self) -> sqlite3.Connection:
+        conn = self.connect()
+        token = _request_cnx.set(conn)
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            _request_cnx.reset(token)
             conn.close()
 
     def execute(

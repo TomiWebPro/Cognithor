@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from secure_db_service import SecureDbService
+from secure_db_service.cache import TtlCache
 
 from .models import AppManifest, AppParameter, AppRecord, AgentAppRecord
 
@@ -65,8 +66,9 @@ def _manifest_to_json(manifest: AppManifest) -> str:
 
 
 class AppRegistry:
-    def __init__(self, svc: SecureDbService):
+    def __init__(self, svc: SecureDbService, cache_ttl: float = 60.0):
         self._svc = svc
+        self._cache = TtlCache(ttl_seconds=cache_ttl)
         self._init_db()
 
     def _init_db(self) -> None:
@@ -100,6 +102,12 @@ class AppRegistry:
                 return aid
         raise RuntimeError("Failed to generate unique app ID")
 
+    def _invalidate_cache(self, app_id: Optional[str] = None) -> None:
+        self._cache.invalidate("apps:all")
+        self._cache.invalidate("apps:available")
+        if app_id:
+            self._cache.invalidate(f"app:{app_id}")
+
     def register_app(self, manifest: AppManifest, directory: Optional[str] = None) -> AppRecord:
         if manifest.icon and not validate_icon(manifest.icon):
             raise ValueError(f"Invalid icon '{manifest.icon}': must be 1-2 unicode code points")
@@ -124,29 +132,51 @@ class AppRegistry:
         return self._row_to_record(row)
 
     def unregister_app(self, app_id: str) -> bool:
-        existing = self.get_app(app_id)
+        existing = self.get_app(app_id, use_cache=False)
         if existing is None:
             return False
         self._svc.execute("DELETE FROM apps WHERE app_id = ?", (app_id,))
+        self._invalidate_cache(app_id)
         return True
 
-    def get_app(self, app_id: str) -> Optional[AppRecord]:
+    def get_app(self, app_id: str, use_cache: bool = True) -> Optional[AppRecord]:
+        if use_cache:
+            cached = self._cache.get(f"app:{app_id}")
+            if cached is not None:
+                return cached
         row = self._svc.query_one(
             "SELECT * FROM apps WHERE app_id = ?", (app_id,)
         )
         if row is None:
             return None
-        return self._row_to_record(row)
+        rec = self._row_to_record(row)
+        if use_cache:
+            self._cache.set(f"app:{app_id}", rec)
+        return rec
 
-    def list_apps(self) -> list[AppRecord]:
+    def list_apps(self, use_cache: bool = True) -> list[AppRecord]:
+        if use_cache:
+            cached = self._cache.get("apps:all")
+            if cached is not None:
+                return cached
         rows = self._svc.query("SELECT * FROM apps ORDER BY name")
-        return [self._row_to_record(r) for r in rows]
+        result = [self._row_to_record(r) for r in rows]
+        if use_cache:
+            self._cache.set("apps:all", result)
+        return result
 
-    def list_available_apps(self) -> list[AppRecord]:
+    def list_available_apps(self, use_cache: bool = True) -> list[AppRecord]:
+        if use_cache:
+            cached = self._cache.get("apps:available")
+            if cached is not None:
+                return cached
         rows = self._svc.query(
             "SELECT * FROM apps WHERE is_available = 1 ORDER BY name"
         )
-        return [self._row_to_record(r) for r in rows]
+        result = [self._row_to_record(r) for r in rows]
+        if use_cache:
+            self._cache.set("apps:available", result)
+        return result
 
     def update_app(
         self,
@@ -160,7 +190,7 @@ class AppRegistry:
         requires_confirmation: Optional[bool] = None,
         timeout_seconds: Optional[int] = None,
     ) -> Optional[AppRecord]:
-        existing = self.get_app(app_id)
+        existing = self.get_app(app_id, use_cache=False)
         if existing is None:
             return None
         if icon is not None and not validate_icon(icon):
@@ -184,6 +214,7 @@ class AppRegistry:
              int(requires_confirmation) if requires_confirmation is not None else None,
              timeout_seconds, now, app_id),
         )
+        self._invalidate_cache(app_id)
         return self.get_app(app_id)
 
     def scan_apps_directory(self, apps_dir: str) -> list[AppRecord]:
@@ -385,6 +416,21 @@ class AgentAppManager:
             (agent_id,),
         )
         return [self._row_to_record(r) for r in rows]
+
+    def batch_list_agent_apps(self, agent_ids: list[str]) -> dict[str, list[AgentAppRecord]]:
+        if not agent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in agent_ids)
+        rows = self._svc.query(
+            f"SELECT * FROM agent_apps WHERE agent_id IN ({placeholders}) ORDER BY app_id",
+            agent_ids,
+        )
+        grouped: dict[str, list] = {aid: [] for aid in agent_ids}
+        for r in rows:
+            aid = r["agent_id"]
+            if aid in grouped:
+                grouped[aid].append(self._row_to_record(r))
+        return grouped
 
     def list_enabled_agent_apps(self, agent_id: str) -> list[AgentAppRecord]:
         rows = self._svc.query(

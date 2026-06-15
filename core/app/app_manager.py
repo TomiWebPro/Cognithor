@@ -292,6 +292,21 @@ class AppTabManager:
         )
         return [self._row_to_record(r) for r in rows]
 
+    def batch_list_open_apps(self, agent_ids: list[str]) -> dict[str, list[AgentOpenAppRecord]]:
+        if not agent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in agent_ids)
+        rows = self._svc.query(
+            f"SELECT * FROM agent_open_apps WHERE agent_id IN ({placeholders}) ORDER BY opened_at",
+            agent_ids,
+        )
+        grouped: dict[str, list] = {aid: [] for aid in agent_ids}
+        for r in rows:
+            aid = r["agent_id"]
+            if aid in grouped:
+                grouped[aid].append(self._row_to_record(r))
+        return grouped
+
     def get_open_app(self, tab_id: str) -> Optional[AgentOpenAppRecord]:
         row = self._svc.query_one(
             "SELECT * FROM agent_open_apps WHERE id = ?", (tab_id,)
@@ -312,83 +327,75 @@ class AppTabManager:
         show_diary: bool = True,
         show_time: bool = True,
     ) -> None:
-        for app_id in self._SYSTEM_PERSISTENT_APPS:
-            if app_id == "__context_window__" and not show_context_window:
-                self._svc.execute(
-                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
-                    (agent_id, app_id),
-                )
-                continue
-            if app_id == "__notes__" and not show_notes:
-                self._svc.execute(
-                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
-                    (agent_id, app_id),
-                )
-                continue
-            if app_id == "__diary__" and not show_diary:
-                self._svc.execute(
-                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
-                    (agent_id, app_id),
-                )
-                continue
-            if app_id == "__time__" and not show_time:
-                self._svc.execute(
-                    "DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
-                    (agent_id, app_id),
-                )
-                continue
+        hidden = set()
+        if not show_context_window:
+            hidden.add("__context_window__")
+        if not show_notes:
+            hidden.add("__notes__")
+        if not show_diary:
+            hidden.add("__diary__")
+        if not show_time:
+            hidden.add("__time__")
 
-            existing = self._svc.query_one(
-                "SELECT id, is_persistent, params FROM agent_open_apps WHERE agent_id = ? AND app_id = ?",
-                (agent_id, app_id),
+        to_delete = [a for a in hidden if a in self._SYSTEM_PERSISTENT_APPS]
+        if to_delete:
+            ph = ",".join("?" for _ in to_delete)
+            self._svc.execute(
+                f"DELETE FROM agent_open_apps WHERE agent_id = ? AND app_id IN ({ph})",
+                [agent_id] + to_delete,
             )
+
+        active_apps = [a for a in self._SYSTEM_PERSISTENT_APPS if a not in hidden]
+        if not active_apps:
+            return
+
+        aph = ",".join("?" for _ in active_apps)
+        existing_rows = self._svc.query(
+            f"SELECT id, app_id, is_persistent, params FROM agent_open_apps "
+            f"WHERE agent_id = ? AND app_id IN ({aph})",
+            [agent_id] + active_apps,
+        )
+        existing_map = {r["app_id"]: r for r in existing_rows}
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        for app_id in active_apps:
+            existing = existing_map.get(app_id)
             if existing is not None:
-                now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                needs_update = False
                 if not existing["is_persistent"]:
-                    self._svc.execute(
-                        "UPDATE agent_open_apps SET is_persistent = 1, updated_at = ? WHERE id = ?",
-                        (now, existing["id"]),
-                    )
+                    needs_update = True
                 try:
                     stored = json.loads(existing["params"]) if existing["params"] else {}
                 except (json.JSONDecodeError, TypeError):
                     stored = {}
+                new_params = dict(stored)
                 if app_id == "__list_apps__":
-                    if stored.get("agent_id") != agent_id:
-                        stored["agent_id"] = agent_id
-                        self._svc.execute(
-                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
-                            (json.dumps(stored), now, existing["id"]),
-                        )
+                    if new_params.get("agent_id") != agent_id:
+                        new_params["agent_id"] = agent_id
+                        needs_update = True
                 if app_id == "__past_actions__":
-                    if stored.get("max_past_actions") != max_past_actions:
-                        stored["max_past_actions"] = max_past_actions
-                    stored["agent_can_change_max_past_actions"] = agent_can_change_max_past_actions
-                    self._svc.execute(
-                        "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
-                        (json.dumps(stored), now, existing["id"]),
-                    )
+                    if new_params.get("max_past_actions") != max_past_actions:
+                        new_params["max_past_actions"] = max_past_actions
+                        needs_update = True
+                    new_params["agent_can_change_max_past_actions"] = agent_can_change_max_past_actions
+                    needs_update = True
                 if app_id == "__notes__":
-                    if stored.get("agent_id") != agent_id:
-                        stored["agent_id"] = agent_id
-                        self._svc.execute(
-                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
-                            (json.dumps(stored), now, existing["id"]),
-                        )
+                    if new_params.get("agent_id") != agent_id:
+                        new_params["agent_id"] = agent_id
+                        needs_update = True
                 if app_id == "__diary__":
-                    if stored.get("agent_id") != agent_id:
-                        stored["agent_id"] = agent_id
-                        self._svc.execute(
-                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
-                            (json.dumps(stored), now, existing["id"]),
-                        )
+                    if new_params.get("agent_id") != agent_id:
+                        new_params["agent_id"] = agent_id
+                        needs_update = True
                 if app_id == "__time__":
-                    if stored.get("agent_id") != agent_id:
-                        stored["agent_id"] = agent_id
-                        self._svc.execute(
-                            "UPDATE agent_open_apps SET params = ?, updated_at = ? WHERE id = ?",
-                            (json.dumps(stored), now, existing["id"]),
-                        )
+                    if new_params.get("agent_id") != agent_id:
+                        new_params["agent_id"] = agent_id
+                        needs_update = True
+                if needs_update:
+                    self._svc.execute(
+                        "UPDATE agent_open_apps SET is_persistent = 1, params = ?, updated_at = ? WHERE id = ?",
+                        (json.dumps(new_params), now, existing["id"]),
+                    )
                 continue
             if app_id == "__list_apps__":
                 self.open_app(agent_id, app_id, is_persistent=True, params={"agent_id": agent_id})

@@ -109,6 +109,21 @@ class DiaryService:
             )
         return [self._row_to_entry(r) for r in rows]
 
+    def batch_list_entries(self, agent_ids: list[str]) -> dict[str, list[DiaryEntry]]:
+        if not agent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in agent_ids)
+        rows = self._svc.query(
+            f"SELECT * FROM agent_diary WHERE agent_id IN ({placeholders}) ORDER BY date DESC",
+            agent_ids,
+        )
+        grouped: dict[str, list] = {aid: [] for aid in agent_ids}
+        for r in rows:
+            aid = r["agent_id"]
+            if aid in grouped:
+                grouped[aid].append(self._row_to_entry(r))
+        return grouped
+
     def _row_to_entry(self, row) -> DiaryEntry:
         return DiaryEntry(
             id=row["id"],

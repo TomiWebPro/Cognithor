@@ -154,9 +154,6 @@ class AgentManager:
         show_time: Optional[bool] = None,
         status: Optional[str] = None,
     ) -> Optional[AgentRecord]:
-        existing = self.get_agent(agent_id)
-        if existing is None:
-            return None
         if max_past_actions is not None:
             max_past_actions = max(3, max_past_actions)
         now = datetime.datetime.now(datetime.timezone.utc).isoformat()

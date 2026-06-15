@@ -227,7 +227,8 @@ class EndpointManager:
 
     def delete_provider(self, name: str) -> bool:
         try:
-            self.tracker._svc.execute("DELETE FROM providers WHERE name = ?", (name,))
+            if not self.tracker.delete_provider(name):
+                return False
             self._instances.pop(name, None)
             self.log.notify(
                 f"Provider deleted: {name}",

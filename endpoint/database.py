@@ -10,6 +10,8 @@ from log_service import LogService
 from log_service.database import LogDatabase
 from secure_db_service import SecureDbService
 
+from secure_db_service.cache import TtlCache
+
 from .models import ProviderRecord
 
 
@@ -82,8 +84,10 @@ class Tracker:
         key_env_var: Optional[str] = None,
         log_service: Optional[LogService] = None,
         svc: Optional[SecureDbService] = None,
+        provider_cache_ttl: float = 30.0,
     ):
         self.db_path = db_path or DB_PATH
+        self._cache = TtlCache(ttl_seconds=provider_cache_ttl)
         self._svc = svc or SecureDbService(
             db_path=self.db_path,
             use_encryption=use_encryption,
@@ -159,6 +163,8 @@ class Tracker:
                 metadata        TEXT,
                 agent_id        TEXT
             );
+            CREATE INDEX IF NOT EXISTS idx_usage_log_agent ON usage_log(agent_id);
+            CREATE INDEX IF NOT EXISTS idx_usage_log_timestamp ON usage_log(timestamp);
 
             CREATE TABLE IF NOT EXISTS health_checks (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -258,8 +264,8 @@ class Tracker:
 
             self._svc.execute("INSERT OR REPLACE INTO schema_version (version) VALUES (2)")
 
-    def _insert_provider(self, rec: ProviderRecord) -> None:
-        self._svc.execute(
+    def _insert_provider(self, rec: ProviderRecord) -> int:
+        cur = self._svc.execute(
             """INSERT INTO providers
                 (name, api_key, base_url, endpoint_path, models, active_models,
                  headers_template, auth_type, auth_header_name, body_template,
@@ -279,32 +285,79 @@ class Tracker:
                 rec.max_retries, rec.timeout_seconds, rec.max_concurrent,
             ),
         )
+        return cur.lastrowid
 
-    def get_provider(self, name: str) -> Optional[ProviderRecord]:
+    def get_provider(self, name: str, use_cache: bool = True) -> Optional[ProviderRecord]:
+        if use_cache:
+            cached = self._cache.get(f"provider:{name}")
+            if cached is not None:
+                return cached
         row = self._svc.query_one(
             "SELECT * FROM providers WHERE name = ?", (name,)
         )
         if row is None:
             return None
-        return self._row_to_record(row)
+        rec = self._row_to_record(row)
+        if use_cache:
+            self._cache.set(f"provider:{name}", rec)
+        return rec
 
-    def get_active_provider(self) -> Optional[ProviderRecord]:
-        rows = list(self._svc.query("SELECT * FROM providers ORDER BY name"))
-        for row in rows:
+    def get_active_provider(self, use_cache: bool = True) -> Optional[ProviderRecord]:
+        if use_cache:
+            cached = self._cache.get("provider:active")
+            if cached is not None:
+                return cached
+        row = self._svc.query_one(
+            """SELECT * FROM providers WHERE active_models IS NOT NULL
+               AND active_models != '' AND active_models != '{}'
+               AND json_valid(active_models)
+               AND (SELECT value FROM json_each(active_models) WHERE value = 1 LIMIT 1) IS NOT NULL
+               ORDER BY name LIMIT 1"""
+        )
+        if row is not None:
             rec = self._row_to_record(row)
-            if any(rec.active_models.values()):
-                return rec
-        for row in rows:
+            if use_cache:
+                self._cache.set("provider:active", rec)
+            return rec
+        row = self._svc.query_one(
+            "SELECT * FROM providers WHERE is_active = 1 ORDER BY name LIMIT 1"
+        )
+        if row is not None:
             rec = self._row_to_record(row)
-            if rec.is_active:
-                return rec
+            if use_cache:
+                self._cache.set("provider:active", rec)
+            return rec
         return None
 
-    def list_providers(self) -> list[ProviderRecord]:
+    def list_providers(self, use_cache: bool = True) -> list[ProviderRecord]:
+        if use_cache:
+            cached = self._cache.get("providers:all")
+            if cached is not None:
+                return cached
         rows = self._svc.query("SELECT * FROM providers ORDER BY name")
-        return [self._row_to_record(r) for r in rows]
+        result = [self._row_to_record(r) for r in rows]
+        if use_cache:
+            self._cache.set("providers:all", result)
+        return result
+
+    def _invalidate_provider_cache(self, name: Optional[str] = None) -> None:
+        self._cache.invalidate("providers:all")
+        self._cache.invalidate("provider:active")
+        if name:
+            self._cache.invalidate(f"provider:{name}")
+
+    def delete_provider(self, name: str) -> bool:
+        existing = self._svc.query_one(
+            "SELECT id FROM providers WHERE name = ?", (name,)
+        )
+        if existing is None:
+            return False
+        self._svc.execute("DELETE FROM providers WHERE name = ?", (name,))
+        self._invalidate_provider_cache(name)
+        return True
 
     def save_provider(self, rec: ProviderRecord) -> ProviderRecord:
+        self._invalidate_provider_cache(rec.name)
         existing = self._svc.query_one(
             "SELECT id FROM providers WHERE name = ?", (rec.name,)
         )
@@ -348,11 +401,7 @@ class Tracker:
             )
             rec.id = existing["id"]
         else:
-            self._insert_provider(rec)
-            row = self._svc.query_one(
-                "SELECT id FROM providers WHERE name = ?", (rec.name,)
-            )
-            rec.id = row["id"] if row else None
+            rec.id = self._insert_provider(rec)
 
         return rec
 
@@ -574,16 +623,59 @@ class Tracker:
         all_agents = self._svc.query(
             "SELECT DISTINCT agent_id FROM usage_log WHERE agent_id IS NOT NULL AND agent_id != ''"
         )
-        result = {}
-        for row in all_agents:
-            aid = row[0]
-            result[aid] = self.get_token_usage_by_period(periods, agent_id=aid)
-            name_row = self._svc.query_one(
-                "SELECT agent_name FROM agent_runs WHERE agent_id = ? AND agent_name IS NOT NULL "
-                "ORDER BY id DESC LIMIT 1",
-                (aid,),
+        if not all_agents:
+            return {}
+        agent_ids = [r[0] for r in all_agents]
+
+        agent_names = {}
+        if agent_ids:
+            ph = ",".join("?" for _ in agent_ids)
+            name_rows = self._svc.query(
+                f"SELECT agent_id, agent_name FROM agent_runs "
+                f"WHERE agent_id IN ({ph}) AND agent_name IS NOT NULL "
+                f"GROUP BY agent_id",
+                agent_ids,
             )
-            result[aid]["_name"] = name_row[0] if name_row else aid
+            for nr in name_rows:
+                agent_names[nr["agent_id"]] = nr["agent_name"]
+
+        result = {}
+        for p in periods:
+            h = self._period_to_hours(p)
+            if h is not None:
+                rows = self._svc.query(
+                    f"SELECT agent_id, COALESCE(SUM(input_tokens), 0), "
+                    f"COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost), 0.0), COUNT(*) "
+                    f"FROM usage_log WHERE agent_id IN ({ph}) "
+                    f"AND timestamp >= datetime('now', ?) "
+                    f"GROUP BY agent_id",
+                    [*agent_ids, f'-{h} hours'],
+                )
+            else:
+                rows = self._svc.query(
+                    f"SELECT agent_id, COALESCE(SUM(input_tokens), 0), "
+                    f"COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost), 0.0), COUNT(*) "
+                    f"FROM usage_log WHERE agent_id IN ({ph}) "
+                    f"GROUP BY agent_id",
+                    agent_ids,
+                )
+            by_aid = {}
+            for r in rows:
+                by_aid[r[0]] = {
+                    "input_tokens": int(r[1]),
+                    "output_tokens": int(r[2]),
+                    "cost": float(r[3]),
+                    "runs": int(r[4]),
+                }
+            for aid in agent_ids:
+                if aid not in result:
+                    result[aid] = {}
+                result[aid][p] = by_aid.get(aid, {
+                    "input_tokens": 0, "output_tokens": 0, "cost": 0.0, "runs": 0,
+                })
+
+        for aid in agent_ids:
+            result[aid]["_name"] = agent_names.get(aid, aid)
         return result
 
     def get_timing_stats(
@@ -632,16 +724,67 @@ class Tracker:
         all_agents = self._svc.query(
             "SELECT DISTINCT agent_id FROM agent_runs WHERE agent_id IS NOT NULL AND agent_id != ''"
         )
-        result = {}
-        for row in all_agents:
-            aid = row[0]
-            result[aid] = self.get_timing_by_period(periods, agent_id=aid)
-            name_row = self._svc.query_one(
-                "SELECT agent_name FROM agent_runs WHERE agent_id = ? AND agent_name IS NOT NULL "
-                "ORDER BY id DESC LIMIT 1",
-                (aid,),
+        if not all_agents:
+            return {}
+        agent_ids = [r[0] for r in all_agents]
+
+        agent_names = {}
+        if agent_ids:
+            ph = ",".join("?" for _ in agent_ids)
+            name_rows = self._svc.query(
+                f"SELECT agent_id, agent_name FROM agent_runs "
+                f"WHERE agent_id IN ({ph}) AND agent_name IS NOT NULL "
+                f"GROUP BY agent_id",
+                agent_ids,
             )
-            result[aid]["_name"] = name_row[0] if name_row else aid
+            for nr in name_rows:
+                agent_names[nr["agent_id"]] = nr["agent_name"]
+
+        result = {}
+        for p in periods:
+            h = self._period_to_hours(p)
+            if h is not None:
+                rows = self._svc.query(
+                    f"SELECT agent_id, "
+                    f"COALESCE(SUM(llm_duration_ms), 0), "
+                    f"COALESCE(SUM(harness_duration_ms), 0), "
+                    f"COALESCE(SUM(wait_requested_ms), 0), "
+                    f"COALESCE(SUM(total_duration_ms), 0), COUNT(*) "
+                    f"FROM agent_runs WHERE agent_id IN ({ph}) "
+                    f"AND started_at >= datetime('now', ?) "
+                    f"GROUP BY agent_id",
+                    [*agent_ids, f'-{h} hours'],
+                )
+            else:
+                rows = self._svc.query(
+                    f"SELECT agent_id, "
+                    f"COALESCE(SUM(llm_duration_ms), 0), "
+                    f"COALESCE(SUM(harness_duration_ms), 0), "
+                    f"COALESCE(SUM(wait_requested_ms), 0), "
+                    f"COALESCE(SUM(total_duration_ms), 0), COUNT(*) "
+                    f"FROM agent_runs WHERE agent_id IN ({ph}) "
+                    f"GROUP BY agent_id",
+                    agent_ids,
+                )
+            by_aid = {}
+            for r in rows:
+                by_aid[r[0]] = {
+                    "generating_ms": float(r[1]),
+                    "harness_ms": float(r[2]),
+                    "wait_requested_ms": float(r[3]),
+                    "total_ms": float(r[4]),
+                    "runs": int(r[5]),
+                }
+            for aid in agent_ids:
+                if aid not in result:
+                    result[aid] = {}
+                result[aid][p] = by_aid.get(aid, {
+                    "generating_ms": 0.0, "harness_ms": 0.0,
+                    "wait_requested_ms": 0.0, "total_ms": 0.0, "runs": 0,
+                })
+
+        for aid in agent_ids:
+            result[aid]["_name"] = agent_names.get(aid, aid)
         return result
 
     def get_idle_breakdown(
@@ -659,43 +802,32 @@ class Tracker:
             where += " AND agent_id = ?" if where else "WHERE agent_id = ?"
             params.append(agent_id)
 
-        rows = self._svc.query(
-            f"SELECT agent_id, started_at, completed_at, wait_requested_ms "
-            f"FROM agent_runs {where} ORDER BY agent_id, started_at",
+        row = self._svc.query_one(
+            f"""SELECT
+               COALESCE(SUM(COALESCE(wait_requested_ms, 0)), 0),
+               COALESCE(SUM(
+                 CASE WHEN prev_completed IS NOT NULL AND started_at IS NOT NULL
+                   THEN MAX(0, (julianday(started_at) - julianday(prev_completed)) * 86400000.0)
+                   ELSE 0 END
+               ), 0)
+             FROM (
+               SELECT started_at, completed_at, wait_requested_ms,
+                 LAG(completed_at) OVER (
+                   PARTITION BY agent_id ORDER BY started_at
+                 ) AS prev_completed
+               FROM agent_runs {where}
+             ) sub""",
             tuple(params),
         )
 
-        idle_ms = 0.0
-        waiting_ms = 0.0
-        prev_completed: Optional[str] = None
-        prev_agent: Optional[str] = None
-
-        for r in rows:
-            current_agent = r["agent_id"]
-            started = r["started_at"]
-            completed = r["completed_at"]
-            wait_req = float(r["wait_requested_ms"] or 0.0)
-
-            waiting_ms += wait_req
-
-            if prev_agent == current_agent and prev_completed is not None and started:
-                try:
-                    import datetime as _dt
-                    prev_dt = _dt.datetime.fromisoformat(prev_completed)
-                    curr_dt = _dt.datetime.fromisoformat(started)
-                    gap_ms = (curr_dt - prev_dt).total_seconds() * 1000
-                    if gap_ms > 0:
-                        idle_ms += gap_ms
-                except (ValueError, TypeError):
-                    pass
-
-            prev_completed = completed
-            prev_agent = current_agent
+        total_gap_ms = float(row[1]) if row else 0.0
+        waiting_ms = float(row[0]) if row else 0.0
+        idle_ms = max(0.0, total_gap_ms - waiting_ms)
 
         return {
-            "idle_ms": max(0.0, idle_ms - waiting_ms),
+            "idle_ms": idle_ms,
             "waiting_ms": waiting_ms,
-            "total_gap_ms": idle_ms,
+            "total_gap_ms": total_gap_ms,
         }
 
     def get_total_cost(self, provider: Optional[str] = None) -> float:

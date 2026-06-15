@@ -112,6 +112,29 @@ class PastActionsService:
         )
         return [self._row_to_record(r) for r in reversed(rows)]
 
+    def batch_get_recent_actions(
+        self,
+        agent_ids: list[str],
+        max_count: int = 5,
+    ) -> dict[str, list[PastActionRecord]]:
+        if not agent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in agent_ids)
+        rows = self._svc.query(
+            f"""SELECT * FROM past_actions
+             WHERE agent_id IN ({placeholders})
+             ORDER BY created_at DESC""",
+            agent_ids,
+        )
+        grouped: dict[str, list] = {aid: [] for aid in agent_ids}
+        for r in rows:
+            aid = r["agent_id"]
+            if aid in grouped and len(grouped[aid]) < max_count:
+                grouped[aid].append(self._row_to_record(r))
+        for aid in grouped:
+            grouped[aid].reverse()
+        return grouped
+
     def count_actions(self, agent_id: str) -> int:
         row = self._svc.query_one(
             "SELECT COUNT(*) AS cnt FROM past_actions WHERE agent_id = ?",

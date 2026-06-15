@@ -73,6 +73,21 @@ class NotesManager:
             (agent_id,),
         )
 
+    def batch_list_notes(self, agent_ids: list[str]) -> dict[str, list]:
+        if not agent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in agent_ids)
+        rows = self._svc.query(
+            f"SELECT * FROM agent_notes WHERE agent_id IN ({placeholders}) ORDER BY created_at",
+            agent_ids,
+        )
+        grouped: dict[str, list] = {aid: [] for aid in agent_ids}
+        for r in rows:
+            aid = r["agent_id"]
+            if aid in grouped:
+                grouped[aid].append(dict(r))
+        return grouped
+
     def update_note(
         self, note_id: str, content: str, title: Optional[str] = None
     ) -> None:
@@ -99,17 +114,16 @@ class NotesManager:
         )
 
     def _increment_count(self, note_id: str) -> None:
-        row = self.get_note(note_id)
-        if row is None:
-            return
-        current = int(row["interaction_count"] or 0)
         self._svc.execute(
-            "UPDATE agent_notes SET interaction_count = ? WHERE id = ?",
-            (current + 1, note_id),
+            "UPDATE agent_notes SET interaction_count = interaction_count + 1 WHERE id = ?",
+            (note_id,),
         )
 
     def _check_and_delete_expired(self, note_id: str) -> bool:
-        row = self.get_note(note_id)
+        row = self._svc.query_one(
+            "SELECT interaction_count, max_interactions FROM agent_notes WHERE id = ?",
+            (note_id,),
+        )
         if row is None:
             return True
         max_int = int(row["max_interactions"] or 10)

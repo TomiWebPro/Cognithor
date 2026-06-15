@@ -109,12 +109,8 @@ async def delete_provider(
     endpoint_mgr: EndpointManager = Depends(_get_endpoint_mgr),
     _: str = Depends(get_current_user),
 ):
-    existing = endpoint_mgr.tracker.get_provider(name)
-    if existing is None:
+    if not endpoint_mgr.tracker.delete_provider(name):
         raise HTTPException(status_code=404, detail="Provider not found")
-    endpoint_mgr.tracker._svc.execute(
-        "DELETE FROM providers WHERE name = ?", (name,)
-    )
     return {"deleted": True}
 
 

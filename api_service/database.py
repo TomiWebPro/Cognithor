@@ -8,6 +8,7 @@ ProgressCallback = Callable[[int, int], None]
 
 import bcrypt
 from secure_db_service import SecureDbService
+from secure_db_service.cache import TtlCache
 
 
 DB_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -43,8 +44,10 @@ class ApiConfigManager:
         key_name: str = "db_key",
         key_env_var: Optional[str] = None,
         svc: Optional[SecureDbService] = None,
+        cache_ttl: float = 60.0,
     ):
         self.db_path = db_path or DB_PATH
+        self._cache = TtlCache(ttl_seconds=cache_ttl)
         if svc is not None:
             self._svc = svc
         else:
@@ -109,17 +112,26 @@ class ApiConfigManager:
         if admin is None:
             self.create_user("admin", "admin")
 
-    def get_config(self, key: str) -> Optional[str]:
+    def get_config(self, key: str, use_cache: bool = True) -> Optional[str]:
+        if use_cache:
+            cached = self._cache.get(f"config:{key}")
+            if cached is not None:
+                return cached
         row = self._svc.query_one(
             "SELECT value FROM api_config WHERE key = ?", (key,)
         )
-        return row["value"] if row else None
+        value = row["value"] if row else None
+        if use_cache and value is not None:
+            self._cache.set(f"config:{key}", value)
+        return value
 
     def set_config(self, key: str, value: str) -> None:
         self._svc.execute(
             "INSERT OR REPLACE INTO api_config (key, value) VALUES (?, ?)",
             (key, value),
         )
+        self._cache.invalidate(f"config:{key}")
+        self._cache.invalidate("config:all")
 
     def toggle_encryption(
         self,
@@ -128,9 +140,16 @@ class ApiConfigManager:
     ) -> bool:
         return self._svc.toggle_encryption(enable, progress_callback)
 
-    def get_all_config(self) -> dict[str, str]:
+    def get_all_config(self, use_cache: bool = True) -> dict[str, str]:
+        if use_cache:
+            cached = self._cache.get("config:all")
+            if cached is not None:
+                return cached
         rows = self._svc.query("SELECT key, value FROM api_config")
-        return {r["key"]: r["value"] for r in rows}
+        result = {r["key"]: r["value"] for r in rows}
+        if use_cache:
+            self._cache.set("config:all", result)
+        return result
 
     def create_user(self, username: str, password: str) -> bool:
         try:

@@ -29,9 +29,64 @@ async def list_agents_runtime(
     _: str = Depends(get_current_user),
 ):
     agents = agent_mgr.list_agents()
+    if not agents:
+        return []
+    agent_ids = [a.agent_id for a in agents]
+
+    past_actions_svc = getattr(request.app.state, "past_actions_svc", None) if request else None
+    notes_mgr = getattr(request.app.state, "notes_manager", None) if request else None
+    diary_svc = getattr(request.app.state, "diary_svc", None) if request else None
+    alarm_svc = getattr(request.app.state, "alarm_service", None) if request else None
+    app_tab_mgr = getattr(request.app.state, "app_tab_mgr", None) if request else None
+    agent_app_mgr = getattr(request.app.state, "agent_app_mgr", None) if request else None
+
+    batch_past = past_actions_svc.batch_get_recent_actions(agent_ids, 5) if past_actions_svc else {}
+    batch_notes = notes_mgr.batch_list_notes(agent_ids) if notes_mgr else {}
+    batch_diary = diary_svc.batch_list_entries(agent_ids) if diary_svc else {}
+    batch_alarms = alarm_svc.batch_list_alarms(agent_ids) if alarm_svc else {}
+    batch_tabs = app_tab_mgr.batch_list_open_apps(agent_ids) if app_tab_mgr else {}
+    batch_apps = agent_app_mgr.batch_list_agent_apps(agent_ids) if agent_app_mgr else {}
+
     results = []
     for a in agents:
-        results.append(_build_runtime(a, agent_mgr, request))
+        aid = a.agent_id
+        result = {"agent": vars(a)}
+
+        records = batch_past.get(aid, [])
+        result["recent_actions"] = [
+            {"role": r.role, "summary": r.summary, "content": (r.content or "")[:200], "created_at": r.created_at}
+            for r in records
+        ]
+
+        notes = batch_notes.get(aid, [])
+        result["notes"] = [
+            {"id": n["id"], "title": n["title"], "content": (n["content"] or "")[:200], "created_at": n["created_at"]}
+            for n in notes
+        ]
+        result["notes_count"] = len(result["notes"])
+
+        entries = batch_diary.get(aid, [])
+        result["diary_count"] = len(entries)
+        result["latest_diary"] = entries[0].content[:200] if entries else None
+
+        alarms = batch_alarms.get(aid, [])
+        result["alarms"] = alarms
+        result["alarms_count"] = len(alarms)
+
+        tabs = batch_tabs.get(aid, [])
+        result["open_tabs"] = [
+            {"tab_id": t.id, "app_id": t.app_id, "label": t.tab_label, "persistent": t.is_persistent}
+            for t in tabs
+        ]
+
+        apps = batch_apps.get(aid, [])
+        result["installed_apps_count"] = len(apps)
+        result["enabled_apps_count"] = sum(1 for a in apps if a.is_enabled)
+
+        result["context_window"] = a.context_window
+
+        results.append(result)
+
     return results
 
 
@@ -185,9 +240,6 @@ async def update_agent(
     agent_mgr: AgentManager = Depends(_get_agent_mgr),
     _: str = Depends(get_current_user),
 ):
-    existing = agent_mgr.get_agent(agent_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
     context_window = payload.get("context_window")
     if context_window is not None:
         try:
@@ -216,6 +268,8 @@ async def update_agent(
         show_time=show_time,
         status=status,
     )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     return vars(record)
 
 
@@ -226,10 +280,8 @@ async def delete_agent(
     request: Request = None,
     _: str = Depends(get_current_user),
 ):
-    existing = agent_mgr.get_agent(agent_id)
-    if existing is None:
+    if not agent_mgr.delete_agent(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
-    agent_mgr.delete_agent(agent_id)
     if request is not None and hasattr(request.app.state, "agent_app_mgr"):
         request.app.state.agent_app_mgr.uninstall_all_for_agent(agent_id)
     return {"deleted": True}

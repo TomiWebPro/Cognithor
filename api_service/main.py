@@ -133,6 +133,16 @@ def create_app(use_encryption: bool = False):
 
     app.add_middleware(EncryptionMiddleware)
 
+    @app.middleware("http")
+    async def db_connection_middleware(request, call_next):
+        svc = getattr(request.app.state, "endpoint_mgr", None)
+        if svc is not None and hasattr(svc, 'tracker') and hasattr(svc.tracker, '_svc'):
+            db_svc = svc.tracker._svc
+            if not db_svc.degraded:
+                with db_svc.request_connection():
+                    return await call_next(request)
+        return await call_next(request)
+
     return app
 
 

@@ -161,6 +161,29 @@ class AlarmService:
             for r in rows
         ]
 
+    def batch_list_alarms(self, agent_ids: list[str]) -> dict[str, list[dict]]:
+        if not agent_ids:
+            return {}
+        placeholders = ",".join("?" for _ in agent_ids)
+        rows = self._svc.query(
+            f"SELECT * FROM agent_alarms WHERE agent_id IN ({placeholders}) ORDER BY created_at DESC",
+            agent_ids,
+        )
+        grouped: dict[str, list[dict]] = {aid: [] for aid in agent_ids}
+        for r in rows:
+            aid = r["agent_id"]
+            if aid in grouped:
+                grouped[aid].append({
+                    "id": r["id"],
+                    "agent_id": r["agent_id"],
+                    "alarm_time": r["alarm_time"],
+                    "time_type": r["time_type"],
+                    "message": r["message"] or "",
+                    "triggered": bool(r["triggered"]),
+                    "created_at": r["created_at"],
+                })
+        return grouped
+
     def cancel_alarm(self, alarm_id: str) -> bool:
         existing = self._svc.query_one(
             "SELECT id FROM agent_alarms WHERE id = ? AND triggered = 0",
